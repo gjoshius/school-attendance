@@ -1,5 +1,23 @@
+/**
+ * teacher.js
+ *
+ * Renders the teacher dashboard: taking daily attendance for the
+ * teacher's assigned class, plus a read-only history view.
+ *
+ * Assumes one class per teacher (`classes.teacher_id`); if a teacher is
+ * ever assigned more than one class, only the first result is used.
+ */
+
 import { supabase } from './supabase.js'
 
+/**
+ * Entry point for the teacher view. Loads the teacher's class and today's
+ * submission status, renders the tab navigation, and shows the
+ * "Take Attendance" tab by default.
+ *
+ * @param {HTMLElement} container - DOM element to render the dashboard into.
+ * @param {string} userId - Supabase auth user id of the signed-in teacher.
+ */
 export async function renderTeacherDashboard(container, userId) {
   // Fetch the teacher's assigned class with its students
   const { data: classes } = await supabase
@@ -16,7 +34,7 @@ export async function renderTeacherDashboard(container, userId) {
   }
 
   // Check if attendance was already submitted today
-  const today = new Date().toISOString().split('T')[0]
+  const today = new Date().toISOString().split('T')[0] // 'YYYY-MM-DD'
 
   const { data: existingRecords } = await supabase
     .from('attendance')
@@ -26,7 +44,7 @@ export async function renderTeacherDashboard(container, userId) {
 
   const alreadySubmitted = existingRecords && existingRecords.length > 0
 
-    // Render the tab navigation
+  // Render the tab navigation
   container.innerHTML = `
     <nav class="tabs">
       <button class="tab active" data-tab="attendance">Take Attendance</button>
@@ -39,6 +57,7 @@ export async function renderTeacherDashboard(container, userId) {
   const tabs = container.querySelectorAll('.tab')
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
+      // Toggle the "active" styling to the clicked tab only
       tabs.forEach(t => t.classList.remove('active'))
       tab.classList.add('active')
       if (tab.dataset.tab === 'attendance') renderAttendanceForm(myClass, today, alreadySubmitted, userId)
@@ -46,11 +65,24 @@ export async function renderTeacherDashboard(container, userId) {
     })
   })
 
+  // Show the attendance form by default
   renderAttendanceForm(myClass, today, alreadySubmitted, userId)
 }
 
-  function renderAttendanceForm(myClass, today, alreadySubmitted, userId) {
+/**
+ * Render the "Take Attendance" tab: a Present/Absent toggle per student
+ * and a submit button that batch-inserts today's attendance records.
+ * If attendance was already submitted today, shows a read-only message
+ * instead so the same class can't be marked twice in one day.
+ *
+ * @param {object} myClass - The teacher's class row, including `.students`.
+ * @param {string} today - 'YYYY-MM-DD' for the current date.
+ * @param {boolean} alreadySubmitted - Whether today's attendance already exists.
+ * @param {string} userId - Supabase auth user id, recorded as `marked_by`.
+ */
+function renderAttendanceForm(myClass, today, alreadySubmitted, userId) {
   const tabContent = document.getElementById('tab-content')
+
   // Block duplicate submissions for the same day
   if (alreadySubmitted) {
     tabContent.innerHTML = `
@@ -59,7 +91,8 @@ export async function renderTeacherDashboard(container, userId) {
     `
     return
   }
-  // Build a toggle row for each student
+
+  // Build a toggle row for each student, defaulting to "Present"
   const studentRows = (myClass.students || [])
     .map(s => `
       <div class="student-row" data-student-id="${s.id}">
@@ -71,6 +104,7 @@ export async function renderTeacherDashboard(container, userId) {
       </div>
     `)
     .join('')
+
   // Render the form layout
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
@@ -78,7 +112,8 @@ export async function renderTeacherDashboard(container, userId) {
     <button id="submit-attendance">Submit Attendance</button>
     <p id="submit-message" class="hidden"></p>
   `
-  // Make toggle buttons switch between Present and Absent
+
+  // Make toggle buttons switch between Present and Absent within each row
   tabContent.querySelectorAll('.student-row').forEach(row => {
     row.querySelectorAll('.toggle-btn').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -88,13 +123,12 @@ export async function renderTeacherDashboard(container, userId) {
     })
   })
 
-
-
   // Batch-insert all attendance records on submit
   document.getElementById('submit-attendance').addEventListener('click', async () => {
     const rows = tabContent.querySelectorAll('.student-row')
     const records = []
 
+    // Read the current Present/Absent state out of the DOM for each row
     rows.forEach(row => {
       const studentId = row.dataset.studentId
       const activeBtn = row.querySelector('.toggle-btn.active')
@@ -110,17 +144,25 @@ export async function renderTeacherDashboard(container, userId) {
 
     const { error } = await supabase.from('attendance').insert(records)
     const msg = document.getElementById('submit-message')
+
     if (error) {
       msg.textContent = 'Error: ' + error.message
       msg.className = 'error'
     } else {
       msg.textContent = 'Attendance submitted!'
       msg.className = 'success'
+      // Prevent a second submission now that today's records exist
       document.getElementById('submit-attendance').disabled = true
     }
   })
 }
 
+/**
+ * Render the "History" tab: all attendance records for this class,
+ * grouped by date (most recent first).
+ *
+ * @param {object} myClass - The teacher's class row.
+ */
 async function renderTeacherHistory(myClass) {
   const tabContent = document.getElementById('tab-content')
 
@@ -155,5 +197,3 @@ async function renderTeacherHistory(myClass) {
 
   tabContent.innerHTML = html
 }
-
-

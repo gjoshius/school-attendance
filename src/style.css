@@ -1,3 +1,10 @@
+/* ==========================================================================
+   style.css
+   Global styles for the School Attendance System.
+   Organized by section: reset -> layout -> shared UI -> feature-specific.
+   ========================================================================== */
+
+/* --- Reset -------------------------------------------------------------- */
 * {
   margin: 0;
   padding: 0;
@@ -10,6 +17,9 @@ body {
   color: #1a1a1a;
 }
 
+/* --- App shell / header --------------------------------------------------
+   #app is the single-column layout wrapper for the whole page; header
+   holds the title and the sign-out button (shown only when logged in). */
 #app {
   max-width: 600px;
   margin: 0 auto;
@@ -29,10 +39,14 @@ header h1 {
   font-size: 1.25rem;
   color: #4f46e5;
 }
+
+/* Utility class toggled via JS to show/hide elements (e.g. sign-out button,
+   error messages) instead of adding/removing them from the DOM. */
 .hidden {
   display: none;
 }
 
+/* --- Buttons -------------------------------------------------------------- */
 button {
   padding: 0.5rem 1rem;
   border: none;
@@ -46,6 +60,7 @@ button {
   color: white;
 }
 
+/* --- Login form (src/auth.js) -------------------------------------------- */
 .login-form {
   max-width: 320px;
   margin: 2rem auto;
@@ -63,6 +78,7 @@ button {
   border-radius: 6px;
   font-size: 1rem;
 }
+
 .login-form button {
   width: 100%;
   background: #4f46e5;
@@ -71,6 +87,7 @@ button {
   font-size: 1rem;
 }
 
+/* Inline feedback messages, shared across login, attendance forms, etc. */
 .error {
   color: #ef4444;
   margin-top: 0.5rem;
@@ -81,6 +98,7 @@ button {
   margin-top: 0.5rem;
 }
 
+/* --- Tab navigation (admin + teacher dashboards) -------------------------- */
 .tabs {
   display: flex;
   gap: 0.5rem;
@@ -97,6 +115,8 @@ button {
   background: #4f46e5;
   color: white;
 }
+
+/* --- Generic forms (create class / add student) --------------------------- */
 form {
   margin-bottom: 1.5rem;
 }
@@ -117,6 +137,7 @@ form button {
   width: 100%;
 }
 
+/* --- Lists (classes, students, attendance history) ------------------------ */
 ul {
   list-style: none;
   margin-bottom: 1rem;
@@ -127,6 +148,7 @@ li {
   border-bottom: 1px solid #e5e7eb;
 }
 
+/* Left border color-codes each attendance entry by status */
 li.present {
   border-left: 3px solid #22c55e;
   padding-left: 0.75rem;
@@ -136,6 +158,9 @@ li.absent {
   border-left: 3px solid #ef4444;
   padding-left: 0.75rem;
 }
+
+/* --- Take Attendance form (src/teacher.js) --------------------------------
+   Each student gets a row with a Present/Absent toggle pair. */
 .student-row {
   display: flex;
   justify-content: space-between;
@@ -157,6 +182,7 @@ li.absent {
   color: #374151;
 }
 
+/* Highlight whichever toggle (Present/Absent) is currently selected */
 .toggle-btn.active.present-btn {
   background: #22c55e;
   color: white;
@@ -166,6 +192,7 @@ li.absent {
   background: #ef4444;
   color: white;
 }
+
 #submit-attendance {
   width: 100%;
   background: #4f46e5;
@@ -175,11 +202,13 @@ li.absent {
   font-size: 1rem;
 }
 
+/* Disabled once attendance has been submitted, to prevent double-submits */
 #submit-attendance:disabled {
   background: #9ca3af;
   cursor: not-allowed;
 }
 
+/* --- Section headings shared across tabs ----------------------------------- */
 h3 {
   margin-bottom: 0.75rem;
   color: #374151;
@@ -190,6 +219,7 @@ h4 {
   color: #6b7280;
 }
 
+/* --- Records tab: date range filter (src/admin.js) ------------------------- */
 .date-range {
   display: flex;
   gap: 0.5rem;
@@ -214,6 +244,7 @@ h4 {
   color: white;
 }
 
+/* --- Records tab: per-class summary cards ----------------------------------- */
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -235,6 +266,7 @@ h4 {
   margin-bottom: 0.25rem;
 }
 
+/* Attendance percentage, the headline number on each card */
 .summary-card .pct {
   display: block;
   font-size: 1.25rem;
@@ -242,6 +274,7 @@ h4 {
   color: #4f46e5;
 }
 
+/* "present/total" detail shown below the percentage */
 .summary-card .detail {
   display: block;
   font-size: 0.75rem;

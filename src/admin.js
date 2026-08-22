@@ -1,5 +1,24 @@
+/**
+ * admin.js
+ *
+ * Renders the admin dashboard: a tabbed view for managing classes,
+ * students, and browsing attendance records.
+ *
+ * Tabs:
+ *  - Classes: create classes and assign a teacher to each one.
+ *  - Students: add students and assign them to a class.
+ *  - Records: view attendance history with per-class summaries,
+ *    filterable by date range.
+ */
+
 import { supabase } from './supabase.js'
 
+/**
+ * Entry point for the admin view. Renders the tab navigation and wires up
+ * tab switching, then shows the Classes tab by default.
+ *
+ * @param {HTMLElement} container - DOM element to render the dashboard into.
+ */
 export async function renderAdminDashboard(container) {
   // Render tab navigation for admin sections
   container.innerHTML = `
@@ -15,8 +34,10 @@ export async function renderAdminDashboard(container) {
   const tabs = container.querySelectorAll('.tab')
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
+      // Toggle the "active" styling to the clicked tab only
       tabs.forEach(t => t.classList.remove('active'))
       tab.classList.add('active')
+
       const tabName = tab.dataset.tab
       if (tabName === 'classes') renderClassesTab()
       else if (tabName === 'students') renderStudentsTab()
@@ -28,6 +49,10 @@ export async function renderAdminDashboard(container) {
   renderClassesTab()
 }
 
+/**
+ * Classes tab: lists existing classes and provides a form to create a new
+ * one, assigning it to a teacher.
+ */
 async function renderClassesTab() {
   const tabContent = document.getElementById('tab-content')
 
@@ -37,7 +62,7 @@ async function renderClassesTab() {
     .select('id, full_name')
     .eq('role', 'teacher')
 
-  // Fetch existing classes with teacher names
+  // Fetch existing classes with teacher names (via the `profiles` relation)
   const { data: classes } = await supabase
     .from('classes')
     .select('*, profiles(full_name)')
@@ -52,7 +77,7 @@ async function renderClassesTab() {
     .map(c => `<li>${c.name} — ${c.profiles?.full_name || 'Unassigned'}</li>`)
     .join('')
 
-      // Render the form and existing classes list
+  // Render the form and existing classes list
   tabContent.innerHTML = `
     <h3>Create Class</h3>
     <form id="class-form">
@@ -69,22 +94,27 @@ async function renderClassesTab() {
 
   // Handle new class creation
   document.getElementById('class-form').addEventListener('submit', async (e) => {
-    e.preventDefault()
+    e.preventDefault() // stop the browser's default full-page form submit
     const name = document.getElementById('class-name').value
     const teacherId = document.getElementById('teacher-select').value
 
     await supabase.from('classes').insert({ name, teacher_id: teacherId })
+    // Re-render the tab so the newly created class shows up in the list
     renderClassesTab()
   })
 }
 
+/**
+ * Students tab: lists all students (with their class) and provides a form
+ * to add a new student to a class.
+ */
 async function renderStudentsTab() {
   const tabContent = document.getElementById('tab-content')
 
   // Fetch all classes for the dropdown
   const { data: classes } = await supabase.from('classes').select('id, name')
 
-  // Fetch all students with their class names
+  // Fetch all students with their class names (via the `classes` relation)
   const { data: students } = await supabase
     .from('students')
     .select('*, classes(name)')
@@ -100,7 +130,7 @@ async function renderStudentsTab() {
     .map(s => `<li>${s.full_name} — ${s.classes?.name}</li>`)
     .join('')
 
-      // Render the student form and existing students
+  // Render the student form and existing students
   tabContent.innerHTML = `
     <h3>Add Student</h3>
     <form id="student-form">
@@ -117,18 +147,23 @@ async function renderStudentsTab() {
 
   // Handle new student form submission
   document.getElementById('student-form').addEventListener('submit', async (e) => {
-    e.preventDefault()
+    e.preventDefault() // stop the browser's default full-page form submit
     const fullName = document.getElementById('student-name').value
     const classId = document.getElementById('student-class').value
 
     await supabase.from('students').insert({ full_name: fullName, class_id: classId })
+    // Re-render the tab so the newly added student shows up in the list
     renderStudentsTab()
   })
 }
 
+/**
+ * Records tab: shows attendance summaries and a detailed, filterable log
+ * grouped by date and class. Defaults to showing just today's records.
+ */
 async function renderRecordsTab() {
   const tabContent = document.getElementById('tab-content')
-  const today = new Date().toISOString().split('T')[0]
+  const today = new Date().toISOString().split('T')[0] // 'YYYY-MM-DD'
 
   tabContent.innerHTML = `
     <h3>Attendance Records</h3>
@@ -141,15 +176,24 @@ async function renderRecordsTab() {
     <div id="records-list"></div>
   `
 
+  // Re-query and re-render when the user picks a new date range
   document.getElementById('filter-btn').addEventListener('click', () => {
     const startDate = document.getElementById('start-date').value
     const endDate = document.getElementById('end-date').value
     loadRecordsRange(startDate, endDate)
   })
 
+  // Initial load: just today's records
   loadRecordsRange(today, today)
 }
 
+/**
+ * Fetch attendance records within [startDate, endDate] (inclusive) and
+ * render both the per-class summary cards and the detailed, grouped list.
+ *
+ * @param {string} startDate - 'YYYY-MM-DD', inclusive range start.
+ * @param {string} endDate - 'YYYY-MM-DD', inclusive range end.
+ */
 async function loadRecordsRange(startDate, endDate) {
   const summaryCards = document.getElementById('summary-cards')
   const recordsList = document.getElementById('records-list')
@@ -168,20 +212,24 @@ async function loadRecordsRange(startDate, endDate) {
     return
   }
 
-  // Track per-class totals and group records by date
+  // Track per-class totals (for the summary cards) and group records by
+  // date then class (for the detailed list) in a single pass.
   const classSummary = {}
   const dateGrouped = {}
   records.forEach(r => {
     const className = r.classes?.name || 'Unknown'
+
     if (!classSummary[className]) classSummary[className] = { present: 0, total: 0 }
     classSummary[className].total++
     if (r.status === 'present') classSummary[className].present++
+
     const dateKey = r.date
     if (!dateGrouped[dateKey]) dateGrouped[dateKey] = {}
     if (!dateGrouped[dateKey][className]) dateGrouped[dateKey][className] = []
     dateGrouped[dateKey][className].push(r)
   })
-    // Render summary cards with attendance percentages
+
+  // Render summary cards with attendance percentages
   let summaryHtml = '<div class="summary-grid">'
   for (const [className, counts] of Object.entries(classSummary)) {
     const pct = Math.round((counts.present / counts.total) * 100)
@@ -196,7 +244,7 @@ async function loadRecordsRange(startDate, endDate) {
   summaryHtml += '</div>'
   summaryCards.innerHTML = summaryHtml
 
-  // Render detailed records grouped by date and class
+  // Render detailed records grouped by date, then by class within each date
   let detailHtml = ''
   for (const [date, classes] of Object.entries(dateGrouped)) {
     detailHtml += `<h4>${date}</h4>`

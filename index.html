@@ -7,13 +7,18 @@
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
+  <!-- App shell: header is static; #main-content is swapped out by
+       main.js depending on auth state (login form, admin, or teacher view) -->
   <div id="app">
     <header>
       <h1>School Attendance System</h1>
+      <!-- Hidden until a user is signed in (see src/main.js) -->
       <button id="sign-out-btn" class="hidden">Sign Out</button>
     </header>
     <main id="main-content"></main>
   </div>
+
+  <!-- App entry point: sets up auth listener + routes to the right view -->
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
