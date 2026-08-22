@@ -1,0 +1,249 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f5f5f5;
+  color: #1a1a1a;
+}
+
+#app {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 0;
+  border-bottom: 2px solid #4f46e5;
+  margin-bottom: 1rem;
+}
+
+header h1 {
+  font-size: 1.25rem;
+  color: #4f46e5;
+}
+.hidden {
+  display: none;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+#sign-out-btn {
+  background: #ef4444;
+  color: white;
+}
+
+.login-form {
+  max-width: 320px;
+  margin: 2rem auto;
+}
+
+.login-form h2 {
+  margin-bottom: 1rem;
+}
+
+.login-form input {
+  width: 100%;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+.login-form button {
+  width: 100%;
+  background: #4f46e5;
+  color: white;
+  padding: 0.75rem;
+  font-size: 1rem;
+}
+
+.error {
+  color: #ef4444;
+  margin-top: 0.5rem;
+}
+
+.success {
+  color: #22c55e;
+  margin-top: 0.5rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.tab {
+  background: #e5e7eb;
+  color: #374151;
+  flex: 1;
+}
+
+.tab.active {
+  background: #4f46e5;
+  color: white;
+}
+form {
+  margin-bottom: 1.5rem;
+}
+
+form input,
+form select {
+  width: 100%;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+form button {
+  background: #4f46e5;
+  color: white;
+  width: 100%;
+}
+
+ul {
+  list-style: none;
+  margin-bottom: 1rem;
+}
+
+li {
+  padding: 0.5rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+li.present {
+  border-left: 3px solid #22c55e;
+  padding-left: 0.75rem;
+}
+
+li.absent {
+  border-left: 3px solid #ef4444;
+  padding-left: 0.75rem;
+}
+.student-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.status-toggle {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.toggle-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 4px;
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.toggle-btn.active.present-btn {
+  background: #22c55e;
+  color: white;
+}
+
+.toggle-btn.active.absent-btn {
+  background: #ef4444;
+  color: white;
+}
+#submit-attendance {
+  width: 100%;
+  background: #4f46e5;
+  color: white;
+  padding: 0.75rem;
+  margin-top: 1rem;
+  font-size: 1rem;
+}
+
+#submit-attendance:disabled {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+h3 {
+  margin-bottom: 0.75rem;
+  color: #374151;
+}
+
+h4 {
+  margin: 0.5rem 0;
+  color: #6b7280;
+}
+
+.date-range {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.date-range label {
+  font-size: 0.85rem;
+  color: #6b7280;
+}
+
+.date-range input {
+  padding: 0.4rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+}
+
+#filter-btn {
+  background: #4f46e5;
+  color: white;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.summary-card {
+  background: white;
+  border-radius: 8px;
+  padding: 0.75rem;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.summary-card strong {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+.summary-card .pct {
+  display: block;
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #4f46e5;
+}
+
+.summary-card .detail {
+  display: block;
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
