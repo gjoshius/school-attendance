@@ -20,3 +20,4 @@ const supabaseKey = 'sb_publishable_vioESOm81kuVqpJF0I1_ng_0qbilloX'
 
 // Shared Supabase client instance, used for auth + all database queries.
 export const supabase = createClient(supabaseUrl, supabaseKey)
+
