@@ -25,10 +25,10 @@ export async function renderAdminDashboard(container) {
   // Render tab navigation for admin sections
   container.innerHTML = `
     <nav class="tabs">
-      <button class="tab" data-tab="today">Today</button>
       <button class="tab active" data-tab="classes">Classes</button>
       <button class="tab" data-tab="students">Students</button>
       <button class="tab" data-tab="records">Records</button>
+      <button class="tab" data-tab="today">Today</button>
     </nav>
     <div id="tab-content"></div>
   `
@@ -37,8 +37,7 @@ export async function renderAdminDashboard(container) {
   const tabs = container.querySelectorAll('.tab')
   tabs.forEach(tab => {
     tab.addEventListener('click', () => {
-      // Clean up the Realtime subscription when leaving the Today tab, so
-      // switching tabs repeatedly doesn't pile up open subscriptions.
+      // Clean up Realtime subscription when leaving Today tab
       if (window._attendanceChannel) {
         supabase.removeChannel(window._attendanceChannel)
         window._attendanceChannel = null
@@ -49,10 +48,10 @@ export async function renderAdminDashboard(container) {
       tab.classList.add('active')
 
       const tabName = tab.dataset.tab
-      if (tabName === 'today') renderTodayTab()
-      else if (tabName === 'classes') renderClassesTab()
+      if (tabName === 'classes') renderClassesTab()
       else if (tabName === 'students') renderStudentsTab()
       else if (tabName === 'records') renderRecordsTab()
+      else if (tabName === 'today') renderTodayTab()
     })
   })
 
@@ -63,65 +62,60 @@ export async function renderAdminDashboard(container) {
 /**
  * Today tab: a live status board of every class showing whether its
  * attendance has been submitted today, updating in real time as teachers
- * submit via a Supabase Realtime subscription.
+ * submit via a Supabase Realtime subscription (Postgres Changes on the
+ * `attendance` table's INSERT event).
  */
 async function renderTodayTab() {
   const tabContent = document.getElementById('tab-content')
-  const today = new Date().toISOString().split('T')[0] // 'YYYY-MM-DD'
+  // Get today's date in YYYY-MM-DD format
+  const today = new Date().toISOString().split('T')[0]
 
   // Fetch all classes with their assigned teacher names
   const { data: classes } = await supabase
     .from('classes')
     .select('id, name, profiles(full_name)')
 
-  // Fetch attendance records already submitted today
+  // Fetch attendance records submitted today
   const { data: todayRecords } = await supabase
     .from('attendance')
     .select('class_id')
     .eq('date', today)
 
   // Collect the IDs of classes that already submitted
-  const submittedClassIds = new Set((todayRecords || []).map(r => r.class_id))
+  const submittedClassIds = new Set(
+    (todayRecords || []).map(r => r.class_id)
+  )
 
   // Build a status card for each class
-  const cards = (classes || [])
-    .map(c => {
-      const submitted = submittedClassIds.has(c.id)
-      return `
-        <div class="status-card ${submitted ? 'submitted' : 'waiting'}" data-class-id="${c.id}">
-          <strong>${c.name}</strong>
-          <span class="teacher-name">${c.profiles?.full_name || 'Unassigned'}</span>
-          <span class="status-badge">${submitted ? 'Submitted' : 'Waiting'}</span>
-        </div>
-      `
-    })
-    .join('')
+  const cards = (classes || []).map(c => {
+    const submitted = submittedClassIds.has(c.id)
+    return `
+      <div class="status-card ${submitted ? 'submitted' : 'waiting'}" data-class-id="${c.id}">
+        <strong>${c.name}</strong>
+        <span class="teacher-name">${c.profiles?.full_name || 'Unassigned'}</span>
+        <span class="status-badge">${submitted ? 'Submitted' : 'Waiting'}</span>
+      </div>
+    `
+  }).join('')
 
   // Render the status board into the tab content area
   tabContent.innerHTML = `
     <h3>Today's Attendance — ${today}</h3>
-    <div id="status-board" class="status-board">
-      ${cards || '<p>No classes created yet.</p>'}
-    </div>
-    <div id="toast-container"></div>
+    <div id="status-board" class="status-grid">${cards || '<p>No classes created yet.</p>'}</div>
   `
 
-  // Clean up any previous subscription before opening a new one (e.g. if
-  // this tab is re-rendered without navigating away first)
+  // Clean up any previous subscription
   if (window._attendanceChannel) {
     supabase.removeChannel(window._attendanceChannel)
   }
 
-  // Subscribe to new attendance inserts and flip the matching card live
+  // Subscribe to new attendance inserts
   window._attendanceChannel = supabase
     .channel('attendance-today')
     .on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'attendance' },
       (payload) => {
-        // Ignore inserts for other dates (e.g. a backfilled record)
-        if (payload.new.date !== today) return
-
         const classId = payload.new.class_id
         const card = tabContent.querySelector(`.status-card[data-class-id="${classId}"]`)
         if (card && card.classList.contains('waiting')) {
@@ -136,25 +130,6 @@ async function renderTodayTab() {
       }
     )
     .subscribe()
-}
-
-/**
- * Briefly show a toast notification in the Today tab's toast container.
- * Silently does nothing if the container isn't on screen (e.g. the user
- * has already navigated to another tab).
- *
- * @param {string} message - Text to display in the toast.
- */
-function showToast(message) {
-  const container = document.getElementById('toast-container')
-  if (!container) return
-
-  const toast = document.createElement('div')
-  toast.className = 'toast'
-  toast.textContent = message
-  container.appendChild(toast)
-
-  setTimeout(() => toast.remove(), 3000)
 }
 
 /**
