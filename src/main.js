@@ -19,6 +19,28 @@ import { renderTeacherDashboard } from './teacher.js'
 const mainContent = document.getElementById('main-content')
 const signOutBtn = document.getElementById('sign-out-btn')
 
+// Create toast container
+const toastContainer = document.createElement('div')
+toastContainer.id = 'toast-container'
+document.body.appendChild(toastContainer)
+
+// Global toast function
+window.showToast = function showToast(message) {
+  const toast = document.createElement('div')
+  toast.className = 'toast'
+  toast.textContent = message
+  toastContainer.appendChild(toast)
+
+  // Trigger slide-in animation
+  requestAnimationFrame(() => toast.classList.add('visible'))
+
+  // Auto-dismiss after 4 seconds
+  setTimeout(() => {
+    toast.classList.remove('visible')
+    toast.addEventListener('transitionend', () => toast.remove())
+  }, 4000)
+}
+
 /**
  * Look up a user's role from the `profiles` table.
  *
@@ -64,6 +86,12 @@ async function handleAuthState(session) {
 // Sign out when the button is clicked.
 // { scope: 'local' } only clears this browser's session (not other devices).
 signOutBtn.addEventListener('click', async () => {
+  // Clean up any open Realtime subscription so it doesn't keep running
+  // (and consuming a connection) after the admin signs out.
+  if (window._attendanceChannel) {
+    supabase.removeChannel(window._attendanceChannel)
+    window._attendanceChannel = null
+  }
   await supabase.auth.signOut({ scope: 'local' })
 })
 
