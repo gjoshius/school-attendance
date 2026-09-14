@@ -1,6 +1,6 @@
 /* ==========================================================================
    style.css
-   Global styles for the School Attendance System.
+   Global styles for HTYG - Attendance System (see src/config.js).
    Organized by section: reset -> layout -> shared UI -> feature-specific.
    ========================================================================== */
 
@@ -17,9 +17,64 @@ body {
   color: #1a1a1a;
 }
 
+/* Browsers don't hand form controls the page's own font by default --
+   <input>/<select>/<button>/<textarea> fall back to their own UA-default
+   font (observed rendering as plain Arial here, not the font-family
+   above). */
+input,
+select,
+button,
+textarea {
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+/* This is the one that actually caused uneven row heights: Chrome's native
+   <select> box (the "menulist" look, with its own OS-style dropdown arrow)
+   doesn't size itself from line-height the way <input>/<button> do --
+   setting line-height on a select has no effect on its rendered height at
+   all, so a <select> sitting next to a search box or button in the same
+   row (the grade filter beside the search box on Volunteer
+   Hours/Students, the session type dropdown beside its label input and
+   toggle button on the Calendar tab, ...) rendered visibly shorter than
+   its row-mates, leaving that row's bottom edge uneven. An em-based
+   min-height on select alone turned out not to be reliable -- what
+   actually fixes it is giving BOTH the select and its row-mates one
+   explicit shared height (var(--field-height) above) rather than trying
+   to infer one element's height from the other's box model. Applied per
+   row below, next to each mixed select+input/button group -- not as a
+   blanket rule here, so it never touches a select that's alone in its own
+   row (.class-group-filter, .volunteer-team-filter, .log-hours-team-picker)
+   or the compact in-card .assign-teacher-select, none of which had this
+   problem to begin with. */
+
+/* --- Spacing & sizing scale -------------------------------------------------
+   Shared building blocks for text inputs/selects, secondary/compact
+   buttons, and label-style text. Before this, the same role (e.g. "padding
+   on a filter's text input") landed on a different close-but-not-quite
+   value in nearly every section -- 0.35rem here, 0.4rem there, 0.5rem
+   somewhere else -- with no reason for the difference. Everything below
+   that plays one of these roles now draws from the same few values, so a
+   row of mixed controls (e.g. a search box next to a select next to a
+   button) lines up instead of each having its own idea of "normal"
+   padding. Component-specific rules still exist below for layout
+   (flex/grid, margins, colors) -- this only standardizes padding/font-size
+   for the three repeated roles named in the variables. */
+:root {
+  --field-padding: 0.45rem 0.6rem;   /* filter/search text inputs & selects */
+  --field-padding-lg: 0.75rem;       /* full-width form inputs (login, create class/student) */
+  --field-height: 2.75rem;           /* explicit height for a select sharing a row with --field-padding inputs/buttons -- see the note above the base `select` rule */
+  --font-field: 0.9rem;              /* text typed into or picked from a field */
+  --font-label: 0.85rem;             /* labels and short helper text next to a field */
+  --font-small: 0.75rem;             /* badges, timestamps, fine print */
+  --btn-padding-sm: 0.4rem 0.75rem;  /* secondary/toggle buttons (status pills, filters) */
+  --btn-padding-xs: 0.3rem 0.6rem;   /* compact per-row action buttons */
+}
+
 /* --- App shell / header --------------------------------------------------
    #app is the single-column layout wrapper for the whole page; header
-   holds the title and the sign-out button (shown only when logged in). */
+   holds the brand (logo + title, from src/config.js -- see main.js) and
+   the sign-out button (shown only when logged in). */
 #app {
   max-width: 600px;
   margin: 0 auto;
@@ -35,9 +90,39 @@ header {
   margin-bottom: 1rem;
 }
 
+.header-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0; /* lets the title truncate instead of pushing the sign-out button off screen on a narrow phone */
+}
+
+.app-logo {
+  width: 2.25rem;
+  height: 2.25rem;
+  object-fit: contain;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
 header h1 {
-  font-size: 1.25rem;
+  font-size: 1.1rem;
   color: #4f46e5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Small, always-visible credit line at the bottom of every screen -- text
+   comes from src/config.js's APP_FOOTER_TEXT (see main.js). Deliberately
+   low-contrast/small so it doesn't compete with the actual admin/teacher
+   UI above it. */
+.app-footer {
+  margin-top: 2rem;
+  padding: 1rem 0;
+  text-align: center;
+  font-size: 0.75rem;
+  color: #9ca3af;
 }
 
 /* Utility class toggled via JS to show/hide elements (e.g. sign-out button,
@@ -72,7 +157,7 @@ button {
 
 .login-form input {
   width: 100%;
-  padding: 0.75rem;
+  padding: var(--field-padding-lg);
   margin-bottom: 0.75rem;
   border: 1px solid #d1d5db;
   border-radius: 6px;
@@ -83,8 +168,24 @@ button {
   width: 100%;
   background: #4f46e5;
   color: white;
-  padding: 0.75rem;
+  padding: var(--field-padding-lg);
   font-size: 1rem;
+}
+
+/* "Forgot password?" link + the reset-request form it toggles open */
+.forgot-password-link {
+  text-align: center;
+  margin-top: 0.75rem;
+}
+
+.forgot-password-link a {
+  color: #4f46e5;
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+
+#reset-form {
+  margin-top: 0.75rem;
 }
 
 /* Inline feedback messages, shared across login, attendance forms, etc. */
@@ -98,22 +199,208 @@ button {
   margin-top: 0.5rem;
 }
 
-/* --- Tab navigation (admin + teacher dashboards) -------------------------- */
-.tabs {
-  display: flex;
-  gap: 0.5rem;
+/* --- Welcome banner (src/teacher.js) ----------------------------------------
+   Shown at the top of the teacher dashboard on every login, whether or
+   not they have a class assigned yet. */
+.welcome-banner {
   margin-bottom: 1rem;
 }
 
+.welcome-banner h2 {
+  color: #1a1a1a;
+  font-size: 1.1rem;
+  margin-bottom: 0.15rem;
+}
+
+.welcome-datetime {
+  color: #6b7280;
+  font-size: 0.85rem;
+}
+
+/* --- Class switcher (src/teacher.js) ---------------------------------------
+   Shown above the tab navigation only when a teacher is assigned more
+   than one class (e.g. a grade homeroom plus an optional Gita/Bhajan
+   class), so they can pick which class's attendance/history to view. */
+.class-switcher {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.class-switch-btn {
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+}
+
+.class-switch-btn.active {
+  background: #4f46e5;
+  color: white;
+}
+
+/* --- Role switcher (src/main.js) ----------------------------------------
+   Shown above everything else, in place of the dashboard, only for an
+   admin who is also personally assigned to teach a class (see
+   renderDualRoleShell) -- lets them flip between the full admin dashboard
+   and their own teacher dashboard without a second login. Same visual
+   pattern as .class-switcher/.class-switch-btn above, kept as its own
+   block since it's a different feature (switching dashboards, not
+   switching which class within the teacher dashboard). */
+.role-switcher {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.role-switch-btn {
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+  font-weight: 600;
+}
+
+.role-switch-btn.active {
+  background: #4f46e5;
+  color: white;
+}
+
+/* --- Tab navigation (admin + teacher dashboards, src/nav.js) ---------------
+   Drawer nav, not an on-screen tab row -- see DECISIONS.md's "Tab
+   navigation is an off-canvas drawer, not an on-screen row" for the two
+   on-screen layouts this replaced and why both hit the same ceiling.
+
+   `.tab`/`.tab.active` (background + text color) are shared between the
+   bar's own buttons (none currently) and every button inside the drawer
+   panel below -- .nav-drawer-panel .tab layers on the full-width, stacked
+   presentation those need that a plain inline tab never did. */
 .tab {
   background: #e5e7eb;
   color: #374151;
-  flex: 1;
+  padding: 0.5rem 0.75rem;
+  /* 44pt/48dp is Apple's and Android's own minimum comfortable tap target
+     -- the default button padding alone doesn't quite reach it. */
+  min-height: 44px;
 }
 
 .tab.active {
   background: #4f46e5;
   color: white;
+}
+
+/* The always-visible bar: just a button naming the current section --
+   tapping it is the only way to reach the drawer below. */
+.nav-bar {
+  margin-bottom: 1rem;
+}
+
+.nav-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  background: #4f46e5;
+  color: white;
+  padding: 0.65rem 1rem;
+  min-height: 44px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.nav-menu-icon {
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.nav-current-label {
+  flex: 1;
+  text-align: left;
+}
+
+/* Off-canvas panel + backdrop, both hidden until .nav-drawer gets the
+   .open class (see nav.js) -- kept in the DOM at all times (rather than
+   display:none) so the slide-in/fade transitions below actually have
+   something to animate between. Same overlay color/z-index as the Today
+   tab's review modal (.review-modal-overlay) for visual consistency
+   between the two full-screen overlays this app has. */
+.nav-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.nav-drawer.open {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.nav-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.nav-drawer.open .nav-drawer-backdrop {
+  opacity: 1;
+}
+
+.nav-drawer-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(78vw, 300px);
+  background: white;
+  box-shadow: 2px 0 12px rgba(0, 0, 0, 0.2);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  overflow-y: auto;
+  transform: translateX(-100%);
+  transition: transform 0.2s ease;
+}
+
+.nav-drawer.open .nav-drawer-panel {
+  transform: translateX(0);
+}
+
+.nav-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.nav-drawer-title {
+  font-weight: 700;
+  color: #374151;
+}
+
+.nav-drawer-close {
+  background: transparent;
+  color: #6b7280;
+  font-size: 1.1rem;
+  width: auto;
+  padding: 0.25rem 0.6rem;
+}
+
+/* Every section listed full-width and stacked, rather than the plain
+   inline .tab presentation -- there's no shared row to fit alongside
+   here, just a scrollable list. */
+.nav-drawer-panel .tab {
+  width: 100%;
+  text-align: left;
 }
 
 /* --- Generic forms (create class / add student) --------------------------- */
@@ -124,17 +411,61 @@ form {
 form input,
 form select {
   width: 100%;
-  padding: 0.5rem;
+  padding: var(--field-padding);
   margin-bottom: 0.5rem;
   border: 1px solid #d1d5db;
   border-radius: 6px;
-  font-size: 0.9rem;
+  font-size: var(--font-field);
 }
 
 form button {
   background: #4f46e5;
   color: white;
   width: 100%;
+}
+
+/* --- Password fields: show/hide eye toggle (src/password-toggle.js) -------
+   Wraps a password <input> so its toggle button can sit inside the field
+   itself, at the right edge -- used on Sign In, Set/Reset Password, and
+   the recovery-link Set Your Password form (see auth.js/set-password.js).
+   The input keeps every rule from "form input" above (width, border,
+   font-size, its own margin-bottom for spacing after the field); this
+   just adds room on the right for the button. */
+.password-field {
+  position: relative;
+}
+
+.password-field input {
+  padding-right: 2.75rem;
+}
+
+/* Overrides "form button"/".login-form button" above (transparent/
+   no-width instead of the full-width indigo submit-button look) -- this
+   is a small icon-only control living inside the field, not another
+   submit button. Scoped as ".password-field .password-toggle-btn"
+   (two classes) rather than just ".password-toggle-btn" (one class) so
+   it outranks both of those selectors on specificity -- ".login-form
+   button" is one class + one element, and plain ".password-toggle-btn"
+   alone doesn't beat that no matter where it sits in the file. */
+.password-field .password-toggle-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 2.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #9ca3af;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.password-field .password-toggle-btn:hover {
+  color: #4b5563;
 }
 
 /* --- Lists (classes, students, attendance history) ------------------------ */
@@ -161,7 +492,11 @@ li.absent {
 
 /* --- Take Attendance form (src/teacher.js) --------------------------------
    Each student gets a row with a Present/Absent toggle pair. */
-.student-row {
+/* .co-teacher-row (teacher.js's "Take Attendance" tab -- see
+   data_import/18_teacher_attendance.sql) shares this styling since it's
+   the same row-with-a-toggle layout as a student row. */
+.student-row,
+.co-teacher-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -175,8 +510,8 @@ li.absent {
 }
 
 .toggle-btn {
-  padding: 0.4rem 0.75rem;
-  font-size: 0.8rem;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
   border-radius: 4px;
   background: #e5e7eb;
   color: #374151;
@@ -193,11 +528,45 @@ li.absent {
   color: white;
 }
 
+/* Same green/red language as Present/Absent above, reused for the
+   teacher Calendar tab's Available/Unavailable toggle (src/teacher.js,
+   data_import/27_teacher_availability.sql) -- consistent meaning
+   wherever this app shows a two-state toggle. */
+.toggle-btn.active.available-btn {
+  background: #22c55e;
+  color: white;
+}
+
+.toggle-btn.active.unavailable-btn {
+  background: #ef4444;
+  color: white;
+}
+
+/* Sits inside a .session-row alongside the existing date/label/badges --
+   shrinks rather than squeezing its buttons when the row wraps on a
+   narrow screen (see the .session-row mobile media query below). */
+.availability-toggle {
+  flex-shrink: 0;
+}
+
+/* Review modal rows for a class already flagged for rework -- read-only,
+   since there's nothing for the admin to do until the teacher resubmits
+   (see openClassReviewModal). Dimmed and non-interactive rather than
+   removed entirely, so the admin can still see what was submitted. */
+.review-student-row.read-only,
+.review-teacher-row.read-only {
+  opacity: 0.7;
+}
+
+.toggle-btn:disabled {
+  cursor: default;
+}
+
 #submit-attendance {
   width: 100%;
   background: #4f46e5;
   color: white;
-  padding: 0.75rem;
+  padding: var(--field-padding-lg);
   margin-top: 1rem;
   font-size: 1rem;
 }
@@ -219,6 +588,27 @@ h4 {
   color: #6b7280;
 }
 
+/* Pairs a section's <h3> with a single filter/picker that would otherwise
+   sit alone on its own line right below it (Team: on both Volunteer Hours
+   screens, Show: above Existing Classes) -- heading left, control right,
+   one line, instead of two separate lines each claiming the full row's
+   height. margin:0 on the direct children hands all of the row's spacing
+   to .section-header-row itself, so nothing doubles up; flex-wrap is a
+   narrow-phone fallback only -- at every width this app actually needs to
+   support, both sides fit on one line. */
+.section-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.section-header-row > * {
+  margin: 0;
+}
+
 /* --- Records tab: date range filter (src/admin.js) ------------------------- */
 .date-range {
   display: flex;
@@ -229,19 +619,306 @@ h4 {
 }
 
 .date-range label {
-  font-size: 0.85rem;
+  font-size: var(--font-label);
   color: #6b7280;
 }
 
 .date-range input {
-  padding: 0.4rem;
+  padding: var(--field-padding);
   border: 1px solid #d1d5db;
   border-radius: 4px;
+  font-size: var(--font-field);
 }
 
 #filter-btn {
   background: #4f46e5;
   color: white;
+}
+
+/* --- Students tab: grade / optional-class filters (src/admin.js) -----------
+   A compact grid, not a flow of "Label: <select>" pairs -- each field is a
+   label-above-control cell so its width doesn't depend on its label's text
+   length, letting narrow columns pack tightly instead of one long "Filter
+   by grade:" pair forcing everything after it onto its own near-empty row.
+   auto-fit sizes as many equal columns as fit (min 140px each), so this
+   collapses from 3 columns down to fewer on a narrower window on its own. */
+.grade-filter {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  column-gap: 1rem;
+  row-gap: 0.6rem;
+  align-items: end;
+  margin-bottom: 1rem;
+}
+
+.grade-filter label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: var(--font-label);
+  color: #6b7280;
+}
+
+/* Same explicit-height fix as .log-hours-controls above -- a <select>
+   doesn't size itself from padding/line-height the way <input> does, so
+   without this the grade/optional-class selects here rendered shorter
+   than the search box beside them. */
+.grade-filter select,
+#student-search {
+  height: var(--field-height);
+  min-height: 0;
+}
+
+/* A native <select> sizes its closed-state box to fit its WIDEST <option>
+   text, not the currently-selected one -- the grade filter's "Balashishyas
+   (Kindergarten - 5th Grade)" option was blowing the box out to ~350px even
+   while "All Grades" was showing. Each select now fills its grid column
+   instead (width: 100%), so that no longer affects the layout; the
+   ellipsis just keeps an unusually long selected option from overflowing
+   a narrow column. */
+.grade-filter select {
+  width: 100%;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#student-search {
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+  width: 100%;
+}
+
+/* Below phone width, force one field per row (auto-fit would otherwise
+   still fit 2 narrow columns), and give each select real width to tap --
+   fiddly to hit precisely otherwise on iOS/Android. */
+@media (max-width: 480px) {
+  .grade-filter {
+    grid-template-columns: 1fr;
+    row-gap: 0.6rem;
+  }
+
+  .grade-filter select {
+    min-height: 44px;
+  }
+
+  #student-search {
+    min-height: 44px;
+  }
+}
+
+/* Live "N of M" count above a filtered list (currently the Students tab --
+   see admin.js's renderStudentList) so narrowing a search down doesn't
+   mean scrolling to the bottom just to see how many matched. */
+.result-count {
+  font-size: 0.85rem;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}
+
+/* --- Teacher assignment: drag-and-drop (Classes tab, src/admin.js) --------- */
+.drag-hint {
+  font-size: var(--font-label);
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+}
+
+.teacher-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.teacher-chip {
+  display: inline-block;
+  padding: 0.35rem 0.75rem;
+  background: #eef2ff;
+  color: #4f46e5;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  cursor: grab;
+}
+
+.teacher-chip:active {
+  cursor: grabbing;
+}
+
+/* A teacher who hasn't signed up for an account yet (see
+   data_import/pending_class_assignments) -- still draggable/assignable,
+   just visually distinct */
+.teacher-chip-pending {
+  background: white;
+  border-style: dashed;
+}
+
+.teacher-chip em,
+.teacher-tag-pending {
+  font-style: normal;
+  opacity: 0.75;
+}
+
+.no-teachers {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+/* "Show:" group filter above "Existing Classes" -- lets the admin view
+   one group of class cards at a time instead of all of them at once,
+   which matters most on a narrow/mobile screen. Full-width select on
+   small screens so it's an easy, thumb-friendly tap target.
+
+   Label and select are a "label left, control right" single-line pair --
+   justify-content:space-between pins "Show:" to the row's left edge and
+   the select to its right edge, rather than the two sitting bunched
+   together on the left with empty space trailing after them (the same
+   fix applies to the Team: pickers below on the Volunteer Hours screens).
+   No margin of its own -- it's always the second element inside a
+   .section-header-row (see admin.js's renderClassesTab), which owns the
+   row's spacing so it isn't set twice. */
+.class-group-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.class-group-filter label {
+  font-weight: 600;
+  font-size: var(--font-label);
+  color: #4b5563;
+}
+
+.class-group-filter select {
+  flex: none;
+  max-width: 320px;
+  height: var(--field-height);
+  min-height: 0;
+  padding: var(--field-padding);
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  font-size: var(--font-field);
+  background: white;
+}
+
+@media (max-width: 480px) {
+  .class-group-filter {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .class-group-filter select {
+    max-width: none;
+  }
+}
+
+/* "Existing Classes" grid -- styled to match the Today tab's status
+   board, just without the submitted/waiting color-coding */
+.class-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+/* Each class's card -- also the drag-and-drop target for a teacher chip
+   dropped from the pool above */
+.class-card {
+  background: white;
+  border-radius: 8px;
+  padding: 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  transition: background 0.15s ease, outline 0.15s ease;
+  /* Without this, a grid/flex item's min-width defaults to its content
+     size -- so the "+ Add teacher" select below (whose natural width
+     follows its widest option, e.g. a long name + "(pending)") could
+     force the whole card wider than its grid column instead of wrapping
+     or truncating within it. */
+  min-width: 0;
+}
+
+.class-card.drag-over {
+  background: #eef2ff;
+  outline: 2px dashed #4f46e5;
+  outline-offset: -2px;
+}
+
+.class-card-name em {
+  color: #9ca3af;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.class-teachers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.teacher-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.2rem 0.5rem;
+  background: #f3f4f6;
+  color: #374151;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.remove-teacher-btn {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.remove-teacher-btn:hover {
+  color: #ef4444;
+}
+
+.assign-teacher-select {
+  /* A <select>'s closed-box width normally follows its widest <option>
+     text (a long teacher name, or one with "(pending)" tacked on) --
+     these three together are what stop that from pushing past the card's
+     edge: min-width:0 lets it shrink as a flex item, width/max-width:100%
+     cap it at the card's own width, box-sizing keeps the border/padding
+     inside that width rather than adding to it.
+     min-height:auto opts out of the shared select { min-height: 3.76em }
+     floor above -- that floor exists to match a select to an input/button
+     sitting beside it in the same row, which doesn't apply here (this
+     select is alone in the card, under the teacher-tag pills), and 3.76em
+     would render noticeably bulkier than this card's own compact sizing. */
+  align-self: stretch;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  min-height: auto;
+  box-sizing: border-box;
+  padding: 0.3rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  color: #6b7280;
 }
 
 /* --- Today tab: live class status board (src/admin.js) --------------------- */
@@ -266,6 +943,14 @@ h4 {
 /* Override border to green for submitted cards */
 .status-card.submitted {
   border-left-color: #22c55e;
+}
+
+/* Amber for a class flagged for rework -- distinct from both "still
+   waiting to submit" (red) and "submitted, all good" (green), since it's
+   neither: something was submitted, but it's back with the teacher to
+   fix. See admin.js's buildStatusCard / setCardStatus. */
+.status-card.needs-rework {
+  border-left-color: #f59e0b;
 }
 
 /* Card text styles */
@@ -301,6 +986,601 @@ h4 {
   color: #22c55e;
 }
 
+.status-card.needs-rework .status-badge {
+  background: #fffbeb;
+  color: #f59e0b;
+}
+
+/* --- Teacher Availability tab (src/admin.js) --------------------------------
+   Reuses .status-card/.status-grid/.teacher-name from the Today tab above
+   -- same board, same card shape -- but a card can hold more than one
+   teacher row (a class with co-teachers), each with its own
+   .session-status-badge (green/red, already defined for the Calendar
+   tab) rather than the single cascaded .status-badge Today's cards use,
+   since two teachers on one card can each be a different status. */
+.availability-card.all-available {
+  border-left-color: #22c55e;
+}
+
+.availability-card.has-unavailable {
+  border-left-color: #ef4444;
+}
+
+.availability-card.unassigned {
+  border-left-color: #9ca3af;
+}
+
+.availability-card-teacher-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.availability-card-teacher-row:first-of-type {
+  margin-top: 0;
+}
+
+/* Overrides .status-card .teacher-name's own margin-bottom -- that spacing
+   exists to separate the name from a badge stacked below it (Today tab's
+   single-line card); here the name and badge share one row instead, so
+   the extra bottom margin would only misalign them against each other. */
+.availability-card-teacher-row .teacher-name {
+  margin-bottom: 0;
+}
+
+/* Today tab: Pending Volunteer Hours card (see admin.js's
+   renderPendingVolunteerHoursCard) -- only ever rendered into the DOM when
+   there's actually something pending, so this needs no "hidden" state of
+   its own. Amber, the same "needs your attention" color already used for a
+   needs-rework status card above. */
+.pending-volunteer-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-left: 4px solid #f59e0b;
+  border-radius: 6px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+
+.pending-volunteer-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.pending-volunteer-card-text strong {
+  color: #92400e;
+  font-size: 0.95rem;
+}
+
+.pending-volunteer-card-text span {
+  font-size: var(--font-small);
+  color: #92400e;
+}
+
+#pending-volunteer-review-btn {
+  background: #f59e0b;
+  color: white;
+  border: none;
+  padding: var(--btn-padding-sm);
+  border-radius: 4px;
+  font-weight: bold;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+/* Only a submitted card's badge actually opens anything (see admin.js's
+   click handler, which checks the card's live "submitted" class) -- the
+   pointer cursor signals that without needing a separate class per state. */
+.status-badge-clickable {
+  cursor: pointer;
+}
+
+/* Shown on a badge while its review data is being fetched (see
+   openClassReviewModal) -- the badge's own text becomes the loading
+   indicator, since the modal itself doesn't exist yet at this point. */
+.status-badge-clickable.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* --- Today tab: review modal (src/admin.js) ---------------------------------
+   Opens as a centered modal, over the whole page, when an already-submitted
+   class's badge is clicked -- lets the admin edit that class's
+   student/teacher attendance in place, or reject it for rework. A modal
+   rather than an inline expansion so it's immediately visible with no
+   scrolling, no matter where the class's card sits in the status grid. See
+   openClassReviewModal / wireReviewPanel and
+   data_import/19_admin_attendance_management.sql. */
+.review-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 1000;
+}
+
+.review-modal {
+  position: relative;
+  background: white;
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 420px;
+  max-height: 85vh;
+  overflow-y: auto;
+  text-align: left;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.review-modal h4 {
+  margin: 0 0 0.5rem;
+  padding-right: 1.5rem;
+  color: #111827;
+}
+
+.review-modal h5 {
+  margin: 0.5rem 0 0.25rem;
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+.review-modal-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+}
+
+.review-modal-close:hover {
+  color: #374151;
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Same row-with-a-toggle layout as .student-row, just scoped separately
+   since these rows live inside a review panel rather than the attendance
+   form and carry their own data-record-id. */
+.review-student-row,
+.review-teacher-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.85rem;
+}
+
+.review-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.save-review-btn {
+  background: #4f46e5;
+  color: white;
+}
+
+.reject-review-btn {
+  background: white;
+  color: #ef4444;
+  border: 1px solid #ef4444;
+}
+
+/* Armed state -- the button's own text swaps to a confirm prompt on first
+   click (see wireReviewPanel), and this fills it solid red so the second,
+   actually-destructive click is visually unmistakable. */
+.reject-review-btn.confirm-armed {
+  background: #ef4444;
+  color: white;
+}
+
+/* Both actions disable once Save Changes succeeds -- see wireReviewPanel --
+   so this review is visibly done rather than still inviting a click. */
+.save-review-btn:disabled,
+.reject-review-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.review-message {
+  font-size: 0.85rem;
+}
+
+/* Shown at the top of the review modal when the class is already flagged
+   for rework and still waiting on the teacher -- see openClassReviewModal. */
+.review-rework-notice {
+  font-size: 0.85rem;
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+}
+
+/* Shown above a teacher's "Take Attendance" form when it's reopened
+   pre-filled after a reject -- see teacher.js's renderAttendanceForm. */
+.rework-notice {
+  font-size: 0.85rem;
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+/* --- Lesson note (src/teacher.js's attendance form, src/admin.js's review
+   modal) -- see data_import/30_class_lesson_notes.sql. The textarea is
+   styled like a chat app's compose box (rounded, soft grey) since it's
+   meant to feel like a quick message, not a form field; the saved note
+   then renders as a sent-message bubble in both the teacher's locked view
+   and the admin's review modal, via teacher.js's buildLessonNoteBubbleHtml. */
+.lesson-note-section {
+  margin: 1rem 0;
+}
+
+.lesson-note-section label {
+  display: block;
+  font-size: var(--font-label);
+  color: #4b5563;
+  margin-bottom: 0.35rem;
+}
+
+.lesson-note-textarea {
+  display: block;
+  width: 100%;
+  min-height: 4.5rem;
+  resize: vertical;
+  box-sizing: border-box;
+  border: 1px solid #d1d5db;
+  border-radius: 1.1rem;
+  padding: 0.65rem 0.9rem;
+  font: inherit;
+  font-size: var(--font-field);
+  line-height: 1.4;
+  background: #f0f2f5;
+  color: #111b21;
+}
+
+.lesson-note-textarea::placeholder {
+  color: #8696a0;
+}
+
+.lesson-note-textarea:focus {
+  outline: none;
+  border-color: #25d366;
+  background: #fff;
+}
+
+.lesson-note-counter {
+  text-align: right;
+  font-size: var(--font-small);
+  color: #9ca3af;
+  margin: 0.25rem 0 0;
+}
+
+.lesson-note-counter.warning {
+  color: #d97706;
+}
+
+.lesson-note-counter.over-limit {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+/* The saved note, rendered as a sent chat bubble once attendance is locked
+   (teacher's own view) or inside the admin's Today-tab review modal. */
+.lesson-note-bubble-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.75rem;
+}
+
+.lesson-note-bubble {
+  background: #d9fdd3;
+  color: #111b21;
+  border-radius: 0.9rem 0.9rem 0.2rem 0.9rem;
+  padding: 0.55rem 0.75rem;
+  max-width: 85%;
+  font-size: var(--font-field);
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+}
+
+.lesson-note-bubble-empty {
+  color: #9ca3af;
+  font-size: var(--font-label);
+  font-style: italic;
+  margin: 0.25rem 0 1rem;
+}
+
+/* Edit/Add link under the note bubble on the teacher's locked attendance
+   view (see teacher.js's renderLessonNoteDisplay) -- editing a note here
+   doesn't need an admin or a rework flag, see
+   data_import/31_class_lesson_notes_editable.sql. */
+.lesson-note-edit-btn {
+  width: auto;
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-size: var(--font-label);
+  padding: 0.2rem 0;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.lesson-note-edit-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.lesson-note-save-btn,
+.lesson-note-cancel-btn {
+  width: auto;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.lesson-note-save-btn {
+  background: #4f46e5;
+  color: white;
+  border: none;
+}
+
+.lesson-note-save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.lesson-note-cancel-btn {
+  background: white;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+/* --- Today tab: Class Calendar panel (src/admin.js) ------------------------ */
+/* One row per upcoming class_sessions date -- date, editable label,
+   editable type, and an open/closed toggle, all in a line on desktop and
+   stacked on a narrow screen. */
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.session-row-today {
+  outline: 2px solid #4f46e5;
+  outline-offset: -2px;
+}
+
+.session-date {
+  flex: 0 0 auto;
+  min-width: 6.5rem;
+  font-size: 0.85rem;
+  color: #374151;
+  font-weight: 600;
+}
+
+.session-date em {
+  color: #4f46e5;
+  font-style: italic;
+}
+
+/* Same explicit-height fix as .log-hours-controls above -- without it the
+   type <select> here rendered shorter than its label <input> beside it in
+   the same session row. */
+.session-label-input,
+.session-type-select {
+  height: var(--field-height);
+  min-height: 0;
+}
+
+.session-label-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+}
+
+.session-type-select {
+  flex: 0 0 auto;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+  color: #6b7280;
+}
+
+.session-toggle-btn {
+  flex: 0 0 auto;
+  padding: var(--btn-padding-xs);
+  border: none;
+  border-radius: 999px;
+  font-size: var(--font-small);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.session-toggle-btn.session-open {
+  background: #f0fdf4;
+  color: #22c55e;
+}
+
+.session-toggle-btn.session-closed {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
+/* Teacher's read-only Calendar tab (src/teacher.js) -- same .session-row
+   layout as the admin's editable version, but plain text/badges instead
+   of inputs, selects, and a clickable toggle. */
+.session-label-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: #374151;
+}
+
+.session-type-badge {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: #6b7280;
+  padding: 0.2rem 0.5rem;
+  background: #f3f4f6;
+  border-radius: 999px;
+}
+
+.session-status-badge {
+  flex: 0 0 auto;
+  padding: 0.35rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.session-status-badge.session-open {
+  background: #f0fdf4;
+  color: #22c55e;
+}
+
+.session-status-badge.session-closed {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
+.no-sessions {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* Collapsed by default (see the `open` attribute isn't set in the HTML)
+   so a season's worth of past dates doesn't push "Add a Date" way down
+   the page -- the admin opens it on purpose when they need it. */
+.past-sessions {
+  margin-bottom: 1rem;
+}
+
+.past-sessions summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #4b5563;
+  padding: 0.4rem 0;
+}
+
+.past-sessions .session-list {
+  margin-top: 0.5rem;
+}
+
+/* "+ Add Date" form at the bottom of the panel */
+.add-session-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.add-session-form input[type="text"],
+.add-session-form input[type="date"],
+.add-session-form select {
+  height: var(--field-height);
+  min-height: 0;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+}
+
+.add-session-open-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: var(--font-label);
+  color: #4b5563;
+}
+
+@media (max-width: 480px) {
+  .session-row {
+    flex-wrap: wrap;
+  }
+
+  .session-label-input {
+    flex-basis: 100%;
+  }
+}
+
+/* Shown on the teacher dashboard instead of the attendance form when
+   today isn't open for attendance -- see src/teacher.js and
+   data_import/15_class_sessions.sql. */
+.no-class-message {
+  padding: 0.75rem 1rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  color: #92400e;
+}
+
+/* Shown by main.js when someone is signed in but has no `profiles` row
+   (or one with no recognized role) yet -- typically right after accepting
+   an invite, before data_import/08c_sync_teacher_profiles.sql has run. */
+.pending-setup-message {
+  max-width: 32rem;
+  margin: 3rem auto;
+  padding: 1.5rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  color: #92400e;
+  text-align: center;
+}
+
+.pending-setup-message h2 {
+  margin-top: 0;
+}
+
 /* --- Toast notifications (src/main.js), top-right, slide in/out ------------ */
 #toast-container {
   position: fixed;
@@ -326,6 +1606,133 @@ h4 {
 
 .toast.visible {
   transform: translateX(0);
+}
+
+/* --- Records tab: subsection cards + date grouping (src/admin.js) ---------
+   Two top-level subsections (Attendance Records, Volunteer Hour Records)
+   each get their own white card so they read as clearly separate blocks
+   instead of running straight into each other (a plain h3 has zero
+   margin-top under this app's reset -- see the h3 rule below -- so
+   without a wrapper the previous section's last line and the next
+   section's heading sat flush against each other). Within a card, each
+   date's records are further split into .records-team-block groups; see
+   buildCollapsibleDateGroups for how a wide date range collapses all but
+   the most recent date behind one "Earlier records" toggle (reusing
+   .past-sessions/.session-list from the Calendar tab) rather than
+   dumping every date flat. */
+.records-section {
+  background: white;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin-top: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.records-section h3 {
+  margin-bottom: 1rem;
+}
+
+.records-section h4 {
+  margin-top: 1.25rem;
+}
+
+.records-section h4:first-of-type {
+  margin-top: 0;
+}
+
+.records-date-group {
+  margin-bottom: 1.25rem;
+}
+
+.records-date-group:last-child {
+  margin-bottom: 0;
+}
+
+.records-date-group h4 {
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+}
+
+/* Sub-group heading inside a date's Teacher Attendance body (Balashishyas,
+   Special Classes, etc. -- see loadTeacherAttendanceRange) -- smaller and
+   quieter than the date heading above it, since it's a subdivision within
+   the date, not another date. */
+.records-date-group h5 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+  color: #6b7280;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.records-date-group h5:first-of-type {
+  margin-top: 0;
+}
+
+.records-team-block {
+  margin-bottom: 0.75rem;
+}
+
+.records-team-block:last-child {
+  margin-bottom: 0;
+}
+
+.records-team-block > strong {
+  display: block;
+  font-size: 0.85rem;
+  color: #374151;
+  margin-bottom: 0.35rem;
+}
+
+/* .records-section is already white, so a nested .metric-list (also white,
+   normally relying on box-shadow to lift it off the page's gray
+   background -- see .metric-list above) would otherwise read as flat,
+   white-on-white. A light gray fill plus a thin border stands the list
+   out from its card here instead. */
+.records-section .metric-list {
+  background: #f9fafb;
+  box-shadow: none;
+  border: 1px solid #f3f4f6;
+}
+
+/* Same light-gray card treatment for the plain <ul> lists (Student/Teacher
+   Attendance's present/absent rows -- see li.present/li.absent above,
+   which this doesn't touch) so both halves of Attendance Records match
+   the Volunteer Hour Records side visually. */
+.records-team-block ul {
+  background: #f9fafb;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+
+.records-team-block li:last-child {
+  border-bottom: none;
+}
+
+/* "(also taught X today)" note next to a teacher's name when they marked
+   attendance for more than one class on the same date -- see
+   ADMIN_MESSAGES.teacherAttendance.alsoTeaching and
+   loadTeacherAttendanceRange. Quiet/muted so it reads as supporting
+   context, not a second status. */
+.also-taught-note {
+  color: #9ca3af;
+  font-size: 0.75rem;
+}
+
+/* "by <teacher name>" label above a lesson note's bubble in the Records
+   tab's Lesson Notes subsection -- see loadLessonNotesRange. The bubble
+   itself reuses .lesson-note-bubble-wrap/.lesson-note-bubble/
+   .lesson-note-bubble-empty from the teacher/admin Today-tab lesson-note
+   feature unchanged; this is just the one label this history view adds on
+   top, since (unlike the Today tab's single-class review modal) more than
+   one class's note can be listed together here. */
+.lesson-note-record-teacher {
+  display: block;
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-bottom: 0.3rem;
 }
 
 /* --- Records tab: per-class summary cards ----------------------------------- */
@@ -363,4 +1770,519 @@ h4 {
   display: block;
   font-size: 0.75rem;
   color: #9ca3af;
+}
+
+/* --- Records tab: range metrics (src/admin.js) ------------------------------
+   "Needs Follow-up" and "Perfect Attendance" -- shown instead of a full
+   day-by-day list once a multi-day range is selected (see
+   loadRecordsRange). Each is a heading plus a compact list of
+   name + one stat, not another record-by-record dump. */
+.metric-section {
+  margin-bottom: 1.25rem;
+}
+
+.metric-list {
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+}
+
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.9rem;
+}
+
+.metric-row:last-child {
+  border-bottom: none;
+}
+
+.metric-stat {
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+/* --- Volunteer Hours tab (src/admin.js) ------------------------------------
+   Team picker, a Pending Review section (admin accepts/edits/deletes what
+   a team's teacher submitted -- no free-add form here, see
+   renderVolunteerHoursTab), per-student totals (reuses .metric-list/
+   .metric-row/.metric-stat above), and a day-by-day activity log.
+   .volunteer-team-filter carries no margin of its own -- see
+   .section-header-row above, which it's always the second element of. */
+
+/* "Team:" wraps its select in a single <label> (see renderVolunteerHoursTab)
+   rather than having them as separate siblings -- flex on the label itself
+   still splits it into two items (its own text, then the select), so
+   space-between pins "Team:" left and the select right instead of both
+   sitting bunched together on the left. Same fix as .class-group-filter
+   above and .log-hours-team-picker label below. */
+.volunteer-team-filter label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.volunteer-team-filter select {
+  flex: none;
+  max-width: 320px;
+  height: var(--field-height);
+  min-height: 0;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: var(--font-field);
+}
+
+.volunteer-pending-hint {
+  font-size: var(--font-label);
+  color: #92400e;
+  margin: -0.25rem 0 0.5rem;
+}
+
+.volunteer-entry-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.85rem;
+}
+
+.volunteer-entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+}
+
+.volunteer-entry-note {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+
+/* Inline edit mode (see buildVolunteerEntryEditRow) reuses the row's own
+   .volunteer-entry-main slot for its date/hours/note inputs -- narrower
+   and inline rather than the full-width generic `form input` styling,
+   since these live inside a compact row, not a standalone form. */
+.volunteer-entry-main input {
+  width: auto;
+  padding: 0.3rem 0.5rem;
+  margin: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.volunteer-entry-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.accept-volunteer-entry-btn,
+.edit-volunteer-entry-btn,
+.delete-volunteer-entry-btn,
+.save-volunteer-edit-btn,
+.cancel-volunteer-edit-btn {
+  width: auto;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.accept-volunteer-entry-btn,
+.save-volunteer-edit-btn {
+  background: #4f46e5;
+  color: white;
+  border: none;
+}
+
+.edit-volunteer-entry-btn,
+.cancel-volunteer-edit-btn {
+  background: white;
+  color: #374151;
+  border: 1px solid #d1d5db;
+}
+
+.delete-volunteer-entry-btn {
+  background: white;
+  color: #ef4444;
+  border: 1px solid #ef4444;
+}
+
+/* Same armed-red-fill pattern as .reject-review-btn.confirm-armed. */
+.delete-volunteer-entry-btn.confirm-armed {
+  background: #ef4444;
+  color: white;
+}
+
+/* --- Volunteer Hours tab (src/teacher.js) -----------------------------------
+   A team's teacher picks students by tapping them: an available list
+   (searchable, filterable by grade) sits above a Selected list -- tapping
+   a name in one moves that student to the other, so the available list
+   only ever shows who's left to pick (never who's already been), and
+   Selected is a running summary of who'll get logged. The same date/
+   hours/note goes against everyone in Selected at once on submit -- see
+   renderLogHoursTab / wireLogHoursForm. */
+/* .log-hours-team-picker carries no margin of its own -- always the
+   second element inside a .section-header-row (see teacher.js's
+   renderLogHoursTab), which owns the row's spacing.
+
+   Shown only when a teacher has more than one team to log hours for (see
+   renderLogHoursTab) -- "Team:" wraps its select in one <label>, so flex on
+   the label splits it into its own text plus the select as two items;
+   space-between pins the label left and the select right on their shared
+   line instead of both sitting bunched together on the left. Same fix as
+   .volunteer-team-filter label and .class-group-filter above. */
+.log-hours-team-picker label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.log-hours-team-picker select {
+  flex: none;
+  max-width: 320px;
+  height: var(--field-height);
+  min-height: 0;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: var(--font-field);
+}
+
+/* Shown instead of the label+select above when a teacher has only one
+   team -- no margin of its own for the same reason as
+   .log-hours-team-picker above (it's what fills that slot in the row). */
+.log-hours-team-name {
+  margin: 0;
+}
+
+/* The "Log Volunteer Hours" heading used to sit alone on its own line
+   above Team:, with the Note field on its own line further down --
+   dropping the (redundant, the drawer bar above already says "Volunteer
+   Hours") heading and moving Note up here, beside Team:, turns two
+   separate rows into one. Team: sizes to its own content (flex:none, same
+   as .log-hours-team-picker's own rules); Note takes whatever's left
+   (flex:1) so it stays a comfortably wide typing target rather than
+   shrinking to match Team:'s width. Note is a <form> attribute away from
+   its actual <form id="log-hours-form"> (see renderLogHoursTab) rather
+   than a DOM descendant of it, since it now lives in this row above the
+   form -- that keeps it part of the same submit/validation, but means it
+   no longer matches the generic `form input, form select` rule, so its
+   sizing is spelled out explicitly below instead. */
+.log-hours-top-row {
+  align-items: center;
+}
+
+.log-hours-top-row .log-hours-team-picker {
+  flex: none;
+}
+
+#log-hours-note {
+  flex: 1;
+  min-width: 160px;
+  height: var(--field-height);
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: var(--font-field);
+}
+
+.log-hours-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Date: and Hours: used to stack their label above their input, each
+   pair taking two lines -- putting the label and input on one line (like
+   the Team: row above) gets the same field in half the vertical space.
+   The label text and input are the row's two flex items (a plain text
+   node becomes one automatically); the input flexing to fill what's left
+   after the label text keeps both fields' inputs a consistent width
+   rather than each sizing to its own content. */
+.log-hours-meta label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--font-label);
+  flex: 1;
+  min-width: 220px;
+}
+
+/* Date: needs far less room than "Hours (for everyone selected):" --
+   splitting the row evenly squeezed the longer label into a column too
+   narrow for it, wrapping it across three lines. Sizing Date: to just its
+   own content (flex:0 0 auto, no wrapping) frees the rest of the row for
+   Hours: to grow into instead of an even 50/50 split. */
+.log-hours-meta label:first-child {
+  flex: 0 0 auto;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.log-hours-meta label input {
+  flex: 1;
+  width: auto;
+}
+
+.log-hours-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Search input, grade select, and Select All/Clear buttons sit in one row
+   -- all three get the SAME explicit height (var(--field-height)) instead
+   of each sizing itself from its own padding/line-height, which is what
+   was leaving the select a few pixels shorter than the other two (see the
+   note above the removed `select { min-height }` rule). min-height:0
+   cancels the generic `form input, form select` rule's own sizing so this
+   explicit height is what wins, and margin-bottom:0 overrides that same
+   rule's margin-bottom:0.5rem, which previously ate into the stretched
+   height of whichever element it landed on. */
+.log-hours-controls input,
+.log-hours-controls button,
+.log-hours-controls select {
+  height: var(--field-height);
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.log-hours-controls input {
+  flex: 1;
+}
+
+.log-hours-controls button {
+  width: auto;
+  background: white;
+  color: #374151;
+  border: 1px solid #d1d5db;
+  font-size: var(--font-field);
+  padding: var(--field-padding);
+}
+
+.log-hours-controls select {
+  width: auto;
+  flex: none;
+  font-size: var(--font-field);
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: var(--field-padding);
+}
+
+/* Below phone width, the grade select + search box + Select All/Clear
+   buttons no longer fit on one line without crowding or truncating (the
+   search box in particular was shrinking down to a few visible
+   characters) -- same fix as .grade-filter above: the select and search
+   box each get their own full-width row, and the two buttons share a row
+   below, all sized for a comfortable tap. */
+@media (max-width: 480px) {
+  .log-hours-controls {
+    flex-wrap: wrap;
+  }
+
+  .log-hours-controls select,
+  .log-hours-controls input {
+    flex: 1 1 100%;
+    min-height: 44px;
+  }
+
+  .log-hours-controls button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+}
+
+/* Scrollable rather than letting a full grade-6-through-12 roster push
+   the date/hours/submit controls far down the page. Selected (below) gets
+   a shorter cap -- it's usually much shorter than the full roster, so it
+   doesn't need as much room, though it still scrolls if a big team ends
+   up fully picked. */
+#log-hours-student-list {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 1rem;
+}
+
+#log-hours-selected-list {
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  border-radius: 8px;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 1rem;
+}
+
+/* Each row is a full-width button (not a label/checkbox pair) -- tapping
+   anywhere on it is what moves a student between the two lists, so the
+   whole row is the tap target rather than a small checkbox within it.
+   Sits inside <form id="log-hours-form">, so without an explicit color
+   here it inherits `form button { color: white }` (see the generic forms
+   rules above) -- invisible white text on this row's light background. */
+.log-hours-student-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.15rem;
+  width: 100%;
+  background: none;
+  color: #1a1a1a;
+  border: none;
+  border-bottom: 1px solid #f3f4f6;
+  padding: 0.5rem 0.25rem;
+  font-size: 0.85rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.log-hours-student-row:last-child {
+  border-bottom: none;
+}
+
+.log-hours-student-row:hover {
+  background: rgba(79, 70, 229, 0.08);
+}
+
+/* Name + grade badge, side by side on their own line -- see
+   .log-hours-student-attendance below for the second line (attendance %),
+   both stacked by .log-hours-student-row's own column layout above. */
+.log-hours-student-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.log-hours-student-top span:first-of-type {
+  flex: 1;
+}
+
+.log-hours-student-grade {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+/* Attendance-percentage badge (see teacher.js's fetchAttendancePercentages
+   and config.js's LOG_HOURS_MESSAGES.attendancePercentLabel) -- smaller
+   and quieter than the name/grade line above since it's supporting
+   context, not the primary thing being picked from this list. */
+.log-hours-student-attendance {
+  font-size: 0.7rem;
+  color: #6b7280;
+}
+
+/* Both lists' empty states (no eligible students at all, a search/grade
+   filter matching no one, or nobody selected yet) share this styling. */
+.log-hours-empty-hint {
+  padding: 0.4rem 0.25rem;
+  font-size: 0.8rem;
+  color: #6b7280;
+}
+
+/* --- Activity tab (src/admin.js) --------------------------------------------
+   A read-only audit trail (data_import/24_audit_log.sql) -- date-range +
+   who filter (reuses .date-range from the Records tab), then a list of
+   plain-English summaries newest first. Rows reuse .metric-list's card
+   shell (see the Records tab's range metrics) rather than a new one. */
+.audit-log-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.6rem 0.85rem;
+  border-bottom: 1px solid #f3f4f6;
+  font-size: 0.85rem;
+}
+
+.audit-log-row:last-child {
+  border-bottom: none;
+}
+
+.audit-log-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.audit-log-summary {
+  color: #1f2937;
+}
+
+.audit-log-meta {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+/* Same pill shape as .status-badge, distinct colors per role so the two
+   are easy to tell apart at a glance while scanning a busy list. */
+.audit-log-role-badge {
+  display: inline-block;
+  padding: 0.05rem 0.5rem;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: bold;
+  text-transform: capitalize;
+}
+
+.audit-log-role-admin {
+  background: #eef2ff;
+  color: #4f46e5;
+}
+
+.audit-log-role-teacher {
+  background: #f0fdf4;
+  color: #22c55e;
+}
+
+.audit-log-time {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* --- Teacher Availability tab (src/admin.js) --------------------------------
+   Date picker above a summary line and a .metric-list of every teacher --
+   reuses .metric-row/.metric-stat and .session-status-badge (including
+   the neutral .availability-not-marked variant above) rather than
+   introducing new row markup for what's already the same shape (a name,
+   a detail, and a status). */
+.availability-date-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: var(--font-label);
+  color: #4b5563;
+  margin-bottom: 0.75rem;
+}
+
+.availability-date-picker select {
+  flex: 1;
+  min-width: 0;
+  height: var(--field-height);
+  min-height: 0;
+  padding: var(--field-padding);
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-field);
+}
+
+#availability-summary {
+  margin-bottom: 0.5rem;
 }

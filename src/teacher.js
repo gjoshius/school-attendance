@@ -2,119 +2,618 @@
  * teacher.js
  *
  * Renders the teacher dashboard: taking daily attendance for the
- * teacher's assigned class, plus a read-only history view.
+ * teacher's assigned class(es), plus a read-only history view.
  *
- * Assumes one class per teacher (`classes.teacher_id`); if a teacher is
- * ever assigned more than one class, only the first result is used.
+ * Classes and teachers are many-to-many via the class_teachers join table
+ * (see data_import/06_multi_teacher_classes.sql): a class can have more
+ * than one teacher assigned, and any of them can mark attendance for all
+ * of its students -- attendance is only guarded against being submitted
+ * twice for the same (class, date), not per-teacher. A teacher can also be
+ * linked to more than one class at once -- e.g. running "1st Grade" as
+ * their homeroom and also teaching "Gita" on Saturdays. When a teacher has
+ * more than one class, renderTeacherDashboard shows a class switcher above
+ * the tab navigation so they can pick which one they're looking at; each
+ * class tracks its own "already submitted today" status independently.
+ *
+ * A class is either a grade homeroom (its roster is every student whose
+ * students.class_id points at it) or one of the optional Saturday classes,
+ * Gita/Bhajan (its roster is every student whose students.optional_class
+ * matches, regardless of their grade homeroom -- see
+ * OPTIONAL_CLASS_CODE_BY_NAME in format.js). Either way, once a class has
+ * a `.students` array attached, the rest of this file (attendance form,
+ * submission, history) treats it the same.
  */
 
 import { supabase } from './supabase.js'
+import { toTitleCase, escapeHtml, OPTIONAL_CLASS_CODE_BY_NAME, GRADE_ORDER, VOLUNTEER_ELIGIBLE_GRADES } from './format.js'
+import { todayStr, getSessionForDate } from './calendar.js'
+import { NO_CLASS_MESSAGES, NO_CLASS_ASSIGNED_MESSAGE, TEACHER_MESSAGES, LOG_HOURS_MESSAGES, LESSON_NOTE_MAX_WORDS } from './config.js'
+import { logAudit } from './audit.js'
+import { renderNavDrawer } from './nav.js'
 
 /**
- * Entry point for the teacher view. Loads the teacher's class and today's
- * submission status, renders the tab navigation, and shows the
- * "Take Attendance" tab by default.
+ * Builds the "Welcome, <name>! <day, date, time>" banner shown at the top
+ * of the teacher dashboard on every login, whether or not they have a
+ * class assigned yet. The date/time is a snapshot of when the dashboard
+ * was rendered (i.e. login time) -- it doesn't tick live.
+ *
+ * Pinned to Central Time (see calendar.js's todayStr for why) rather than
+ * the device's own timezone, so this always agrees with what the rest of
+ * the app considers "today" -- and shows the zone abbreviation (CDT/CST)
+ * so that's visible rather than assumed.
+ *
+ * @param {string|null|undefined} fullName
+ * @returns {string} HTML for the banner.
+ */
+function buildWelcomeBanner(fullName) {
+  const dateTimeStr = new Date().toLocaleString('en-US', {
+    timeZone: 'America/Chicago',
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  })
+  return `
+    <div class="welcome-banner">
+      <h2>Welcome, ${fullName ? toTitleCase(fullName) : 'there'}!</h2>
+      <p class="welcome-datetime">${dateTimeStr}</p>
+    </div>
+  `
+}
+
+/**
+ * Entry point for the teacher view. Loads every class the teacher is
+ * assigned to, renders a class switcher when there's more than one, and
+ * shows the "Take Attendance" tab for the first class by default. If the
+ * teacher has no class assigned at all, shows only the welcome banner and
+ * a message -- no tabs, switcher, or attendance UI.
+ *
+ * A teacher's assignments split into two kinds that never mix on screen:
+ * real attendance classes (a grade homeroom or an optional class like
+ * Gita/Bhajan) and volunteer teams (`tracks_volunteer_hours` -- see
+ * data_import/23_volunteer_hours.sql). Take Attendance/History and their
+ * class switcher only ever operate on the former (attendanceClasses,
+ * below); Log Hours only ever operates on the latter (volunteerTeams). A
+ * volunteer team used to leak into the Take Attendance class switcher as
+ * if it were an ordinary class -- since it has no real roster, that both
+ * confused teachers about which button to press for what, and let them
+ * submit an empty "attendance" for it, which crashed on the
+ * teacher_attendance unique constraint the second time (see
+ * DECISIONS.md). Splitting the two apart here is what keeps a teacher
+ * from ever landing on the wrong workflow for what they're actually here
+ * to do.
  *
  * @param {HTMLElement} container - DOM element to render the dashboard into.
  * @param {string} userId - Supabase auth user id of the signed-in teacher.
  */
 export async function renderTeacherDashboard(container, userId) {
-  // Fetch the teacher's assigned class with its students
-  const { data: classes } = await supabase
-    .from('classes')
-    .select('*, students(*)')
+  // Look up the signed-in teacher's name for the welcome banner
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('full_name')
+    .eq('id', userId)
+    .single()
+  const welcomeBannerHtml = buildWelcomeBanner(profile?.full_name)
+
+  // Fetch every class this teacher is linked to via class_teachers (a
+  // class can have more than one teacher, and a teacher can be linked to
+  // more than one class). For a grade class this join also pulls its
+  // roster via students.class_id; for an optional class (Gita, Bhajan)
+  // that join comes back empty since those students' class_id points at
+  // their grade homeroom instead -- handled just below. Also pulls the
+  // class's own class_teachers + profiles so renderAttendanceForm knows
+  // who the co-teacher(s) are for teacher-attendance marking (see
+  // data_import/18_teacher_attendance.sql).
+  const { data: links } = await supabase
+    .from('class_teachers')
+    .select('classes(*, students(*), class_teachers(teacher_id, profiles(full_name)))')
     .eq('teacher_id', userId)
 
-  const myClass = classes?.[0]
+  const classes = (links || []).map(link => link.classes).filter(Boolean)
 
-  // Show a fallback if no class is assigned
-  if (!myClass) {
-    container.innerHTML = '<p>No class assigned to you yet. Contact your admin.</p>'
+  // No class assigned yet: welcome banner plus a plain message -- still
+  // no class switcher or attendance/history UI, but the read-only
+  // calendar is shown to every registered teacher regardless of whether
+  // they have a class yet, so it goes here too.
+  if (!classes || classes.length === 0) {
+    container.innerHTML = `
+      ${welcomeBannerHtml}
+      <p>${NO_CLASS_ASSIGNED_MESSAGE}</p>
+      <div id="tab-content"></div>
+    `
+    renderTeacherCalendar(userId)
     return
   }
 
-  // Check if attendance was already submitted today
-  const today = new Date().toISOString().split('T')[0] // 'YYYY-MM-DD'
+  // Optional classes get their roster from students.optional_class instead
+  // of students.class_id, since a student stays in their grade homeroom
+  // and separately opts into at most one of Gita/Bhajan. Do this for every
+  // assigned class, not just the first, since a teacher can be assigned
+  // both a grade class and an optional class at once.
+  for (const cls of classes) {
+    const optionalCode = OPTIONAL_CLASS_CODE_BY_NAME[cls.name]
+    if (optionalCode) {
+      const { data: optionalStudents } = await supabase
+        .from('students')
+        .select('*')
+        .eq('optional_class', optionalCode)
+      cls.students = optionalStudents || []
+    }
+  }
 
-  const { data: existingRecords } = await supabase
-    .from('attendance')
-    .select('id')
-    .eq('class_id', myClass.id)
-    .eq('date', today)
+  const today = todayStr()
 
-  const alreadySubmitted = existingRecords && existingRecords.length > 0
+  // Whether today is actually open for attendance -- see
+  // data_import/15_class_sessions.sql. No row at all, or a row with
+  // is_attendance_day: false, both mean "don't show the attendance form
+  // today"; renderActiveTab below shows a message instead in either case,
+  // and the admin can open today from the admin dashboard's Calendar tab.
+  const todaySession = await getSessionForDate(today)
 
-  // Render the tab navigation
+  // Split this teacher's assignments into the two kinds that never mix on
+  // screen -- see this function's doc comment above for why. `classes(*)`
+  // already selects every column including `tracks_volunteer_hours`, so
+  // no extra query is needed to tell them apart.
+  const attendanceClasses = classes.filter(c => !c.tracks_volunteer_hours)
+  const volunteerTeams = classes.filter(c => c.tracks_volunteer_hours)
+
+  // Which attendance class and which tab are currently shown. Switching
+  // either one re-renders #tab-content via renderActiveTab() below.
+  // Defaults to Take Attendance when this teacher actually has an
+  // attendance class; a volunteer-team-only teacher (no grade/optional
+  // class at all) has no Take Attendance tab to default to (see
+  // attendanceTabsHtml below), so they land on Log Hours instead.
+  let activeClassIndex = 0
+  let activeTabName = attendanceClasses.length > 0 ? 'attendance' : 'logHours'
+
+  // Only show the class switcher when it's actually needed -- most
+  // teachers have exactly one attendance class -- and only ever list
+  // attendance classes in it; a volunteer team is switched via Log
+  // Hours's own team picker instead (see renderLogHoursTab), never here.
+  const classSwitcherHtml = attendanceClasses.length > 1
+    ? `<div class="class-switcher">${attendanceClasses
+        .map((c, i) => `<button class="class-switch-btn${i === 0 ? ' active' : ''}" data-index="${i}">${c.name}</button>`)
+        .join('')}</div>`
+    : ''
+
+  // Take Attendance and History only make sense when this teacher has at
+  // least one real attendance class -- omitted entirely (not just
+  // disabled) for a teacher assigned only to volunteer team(s), since
+  // there'd be nothing for either tab to show. Most teachers have no
+  // volunteer team at all, so Log Hours only appears when volunteerTeams
+  // is non-empty. Calendar always applies. Order matches what the tab row
+  // always showed: Take Attendance, Log Hours, History, Calendar.
+  const teacherTabs = [
+    ...(attendanceClasses.length > 0 ? [{ key: 'attendance', label: 'Take Attendance' }] : []),
+    // Labeled "Volunteer Hours" (not "Log Hours") to match the admin
+    // dashboard's tab for the same feature -- same name on both screens,
+    // even though the internal 'logHours' key (used only in code, never
+    // shown) stays as-is.
+    ...(volunteerTeams.length > 0 ? [{ key: 'logHours', label: 'Volunteer Hours' }] : []),
+    ...(attendanceClasses.length > 0 ? [{ key: 'history', label: 'History' }] : []),
+    { key: 'calendar', label: 'Calendar' }
+  ]
+
+  // Render the welcome banner, class switcher (if any), and drawer nav
+  // (see nav.js) -- whichever of Take Attendance/Log Hours applies by
+  // default (see activeTabName above) is what the drawer opens on.
   container.innerHTML = `
-    <nav class="tabs">
-      <button class="tab active" data-tab="attendance">Take Attendance</button>
-      <button class="tab" data-tab="history">History</button>
-    </nav>
+    ${welcomeBannerHtml}
+    ${classSwitcherHtml}
+    <div id="nav-container"></div>
     <div id="tab-content"></div>
   `
 
-  // Set up tab click handlers
-  const tabs = container.querySelectorAll('.tab')
-  tabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      // Toggle the "active" styling to the clicked tab only
-      tabs.forEach(t => t.classList.remove('active'))
-      tab.classList.add('active')
-      if (tab.dataset.tab === 'attendance') renderAttendanceForm(myClass, today, alreadySubmitted, userId)
-      else renderTeacherHistory(myClass)
+  // Renders whichever tab is currently active for the currently selected
+  // attendance class. "Already submitted today" is looked up fresh each
+  // time since it's specific to (class, date) and each class tracks it
+  // independently.
+  async function renderActiveTab() {
+    if (activeTabName === 'attendance') {
+      // Guarded even though the tab button itself is never rendered
+      // without an attendance class -- defensive, not reachable in
+      // normal use.
+      if (attendanceClasses.length === 0) return
+      const myClass = attendanceClasses[activeClassIndex]
+      // Not an attendance day (or nothing scheduled at all) -- show why
+      // instead of the form. History is unaffected, since past records
+      // don't depend on today's calendar status.
+      if (!todaySession || !todaySession.is_attendance_day) {
+        renderNoClassMessage(myClass, today, todaySession)
+        return
+      }
+      // Fetch both tables' existing rows for today up front -- not just
+      // whether any exist. If an admin has flagged this submission for
+      // rework (see data_import/22_attendance_rework_flag.sql), the form
+      // needs each student's and co-teacher's current status to pre-fill
+      // with, and each row's id to update in place on resubmit, rather
+      // than just a yes/no "already submitted".
+      // Also fetch today's lesson note for this class, if one was already
+      // written (see data_import/30_class_lesson_notes.sql) -- needed both
+      // to show it back once locked, and to pre-fill the textarea on a
+      // rework resubmit. `.maybeSingle()` since a not-yet-submitted day
+      // simply has no row yet, which isn't an error here. Just `note` --
+      // nothing here needs the row's id, since every write to this table
+      // upserts by (class_id, date) instead of by id (see this file's
+      // submit handler and renderLessonNoteEditForm).
+      const [{ data: existingStudentRecords }, { data: existingTeacherRecords }, { data: existingNote }] = await Promise.all([
+        supabase.from('attendance').select('id, student_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
+        supabase.from('teacher_attendance').select('id, teacher_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
+        supabase.from('class_lesson_notes').select('note').eq('class_id', myClass.id).eq('date', today).maybeSingle()
+      ])
+      const hasRecords = existingStudentRecords && existingStudentRecords.length > 0
+      const needsRework = hasRecords && existingStudentRecords.some(r => r.needs_rework)
+      renderAttendanceForm(myClass, today, userId, {
+        hasRecords,
+        needsRework,
+        studentRecords: existingStudentRecords || [],
+        teacherRecords: existingTeacherRecords || [],
+        existingNote: existingNote || null
+      })
+    } else if (activeTabName === 'logHours') {
+      renderLogHoursTab(volunteerTeams, userId)
+    } else if (activeTabName === 'history') {
+      if (attendanceClasses.length === 0) return // see the 'attendance' branch above
+      renderTeacherHistory(attendanceClasses[activeClassIndex])
+    } else {
+      renderTeacherCalendar(userId)
+    }
+  }
+
+  // Wire the drawer nav -- picking a tab updates activeTabName and
+  // re-renders, same as the old flat tab row's click handler did.
+  renderNavDrawer(document.getElementById('nav-container'), teacherTabs, activeTabName, (tabName) => {
+    activeTabName = tabName
+    renderActiveTab()
+  })
+
+  // Set up class switcher click handlers (no-op when there's only one
+  // attendance class, since the switcher isn't rendered in that case)
+  container.querySelectorAll('.class-switch-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.class-switch-btn').forEach(b => b.classList.remove('active'))
+      btn.classList.add('active')
+      activeClassIndex = Number(btn.dataset.index)
+      renderActiveTab()
     })
   })
 
-  // Show the attendance form by default
-  renderAttendanceForm(myClass, today, alreadySubmitted, userId)
+  // Show the default tab (see activeTabName above) for the first
+  // attendance class by default
+  renderActiveTab()
 }
 
 /**
- * Render the "Take Attendance" tab: a Present/Absent toggle per student
- * and a submit button that batch-inserts today's attendance records.
- * If attendance was already submitted today, shows a read-only message
- * instead so the same class can't be marked twice in one day.
+ * Shown instead of the attendance form when today isn't open for
+ * attendance -- either nothing is scheduled at all (`session` is null),
+ * or it's scheduled but marked closed (a holiday, or a special event the
+ * admin hasn't opened). See data_import/15_class_sessions.sql.
  *
- * @param {object} myClass - The teacher's class row, including `.students`.
- * @param {string} today - 'YYYY-MM-DD' for the current date.
- * @param {boolean} alreadySubmitted - Whether today's attendance already exists.
- * @param {string} userId - Supabase auth user id, recorded as `marked_by`.
+ * @param {object} myClass
+ * @param {string} today - 'YYYY-MM-DD'
+ * @param {object|null} session - The class_sessions row for today, if any.
  */
-function renderAttendanceForm(myClass, today, alreadySubmitted, userId) {
+function renderNoClassMessage(myClass, today, session) {
   const tabContent = document.getElementById('tab-content')
+  const reason = session
+    ? NO_CLASS_MESSAGES.closed(session.label)
+    : NO_CLASS_MESSAGES.notScheduled
+  tabContent.innerHTML = `
+    <h3>${myClass.name} — ${today}</h3>
+    <p class="no-class-message">${reason} ${NO_CLASS_MESSAGES.contactAdmin}</p>
+  `
+}
 
-  // Block duplicate submissions for the same day
-  if (alreadySubmitted) {
-    tabContent.innerHTML = `
-      <h3>${myClass.name} — ${today}</h3>
-      <p class="success">Attendance already submitted for today.</p>
-    `
+/**
+ * Shown once today's attendance is settled -- either it was already
+ * submitted before this render (see renderAttendanceForm's guard above),
+ * or a submit/resubmit just succeeded (see the click handler at the
+ * bottom of renderAttendanceForm). Fully replaces the form rather than
+ * just disabling the submit button and leaving the Present/Absent toggles
+ * in place: those toggles kept their click handlers and stayed visually
+ * interactive even with no way to save anything after them, which looked
+ * like the screen was still editable when it wasn't. Locked like this
+ * until an admin rejects it for rework (data_import/22_attendance_rework_flag.sql),
+ * which is the only thing that brings the form back.
+ *
+ * The lesson note is the one exception -- it's editable straight from this
+ * locked view (see renderLessonNoteDisplay below), no admin/rework needed,
+ * since a free-text note is low-stakes enough that self-editing it directly
+ * is simpler and safer to just allow (see
+ * data_import/31_class_lesson_notes_editable.sql).
+ *
+ * @param {object} myClass
+ * @param {string} today - 'YYYY-MM-DD'
+ * @param {string|null} [noteText] - Today's lesson note for this class, if
+ *   one was written (see data_import/30_class_lesson_notes.sql) -- shown
+ *   back as a chat-style bubble below the success message, with an Edit
+ *   link. Omitted (or blank) shows "no note left" plus an "+ Add a note"
+ *   link instead.
+ * @param {string} userId - Signed-in teacher's id, recorded as `teacher_id`
+ *   if editing the note here creates or updates its row, and as the actor
+ *   on the audit_log entry that edit writes.
+ */
+function renderAlreadySubmittedMessage(myClass, today, noteText, userId) {
+  const tabContent = document.getElementById('tab-content')
+  tabContent.innerHTML = `
+    <h3>${myClass.name} — ${today}</h3>
+    <p class="success">${TEACHER_MESSAGES.attendanceForm.alreadySubmitted}</p>
+    <div id="lesson-note-display"></div>
+  `
+  renderLessonNoteDisplay(myClass, today, noteText, userId)
+}
+
+/**
+ * Renders the lesson-note bubble (or "no note left" line) plus an Edit/Add
+ * link, into #lesson-note-display -- deliberately separate from the rest
+ * of the locked attendance view above it, so editing a note never touches
+ * or needs to re-render the attendance itself. Clicking the link swaps
+ * this same container for a small textarea + Save/Cancel (see
+ * renderLessonNoteEditForm), reusing the same word-counter behavior as the
+ * main attendance form's note field.
+ *
+ * @param {object} myClass
+ * @param {string} today - 'YYYY-MM-DD'
+ * @param {string|null|undefined} noteText
+ * @param {string} userId
+ */
+function renderLessonNoteDisplay(myClass, today, noteText, userId) {
+  const container = document.getElementById('lesson-note-display')
+  if (!container) return // tab may have been switched away from mid-edit
+  const bubbleHtml = buildLessonNoteBubbleHtml(noteText) ||
+    `<p class="lesson-note-bubble-empty">${TEACHER_MESSAGES.attendanceForm.lessonNoteEmpty}</p>`
+  const linkLabel = noteText && noteText.trim()
+    ? TEACHER_MESSAGES.attendanceForm.editNoteLabel
+    : TEACHER_MESSAGES.attendanceForm.addNoteLabel
+  container.innerHTML = `
+    ${bubbleHtml}
+    <button type="button" class="lesson-note-edit-btn">${linkLabel}</button>
+  `
+  container.querySelector('.lesson-note-edit-btn').addEventListener('click', () => {
+    renderLessonNoteEditForm(container, myClass, today, noteText || '', userId)
+  })
+}
+
+/**
+ * Swaps #lesson-note-display for a small edit form: textarea (pre-filled),
+ * live word counter, Save, and Cancel. Save upserts directly onto
+ * class_lesson_notes keyed by (class_id, date) -- there's no need to know
+ * whether a row already exists first, since the unique constraint from
+ * data_import/30_class_lesson_notes.sql plus the update policy from
+ * data_import/31_class_lesson_notes_editable.sql make this work whether
+ * today's note already has a row or not. Cancel discards the edit and
+ * restores the bubble exactly as it was.
+ *
+ * @param {HTMLElement} container - The #lesson-note-display element.
+ * @param {object} myClass
+ * @param {string} today - 'YYYY-MM-DD'
+ * @param {string} currentText - The note's current saved text (possibly
+ *   empty), used to pre-fill the textarea and to restore the bubble on Cancel.
+ * @param {string} userId
+ */
+function renderLessonNoteEditForm(container, myClass, today, currentText, userId) {
+  container.innerHTML = `
+    <div class="lesson-note-section">
+      <textarea id="lesson-note-edit-textarea" class="lesson-note-textarea" placeholder="${TEACHER_MESSAGES.attendanceForm.lessonNotePlaceholder}">${escapeHtml(currentText)}</textarea>
+      <p id="lesson-note-edit-counter" class="lesson-note-counter"></p>
+      <div class="lesson-note-edit-actions">
+        <button type="button" class="lesson-note-save-btn">${TEACHER_MESSAGES.attendanceForm.saveNoteLabel}</button>
+        <button type="button" class="lesson-note-cancel-btn">${TEACHER_MESSAGES.attendanceForm.cancelNoteLabel}</button>
+      </div>
+      <p id="lesson-note-edit-message" class="hidden"></p>
+    </div>
+  `
+
+  const textarea = document.getElementById('lesson-note-edit-textarea')
+  const counterEl = document.getElementById('lesson-note-edit-counter')
+  const saveBtn = container.querySelector('.lesson-note-save-btn')
+  const countWords = (text) => {
+    const trimmed = text.trim()
+    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length
+  }
+  const updateCounter = () => {
+    const words = countWords(textarea.value)
+    const overLimit = words > LESSON_NOTE_MAX_WORDS
+    counterEl.textContent = overLimit
+      ? TEACHER_MESSAGES.attendanceForm.lessonNoteOverLimit(LESSON_NOTE_MAX_WORDS)
+      : TEACHER_MESSAGES.attendanceForm.lessonNoteCounter(words, LESSON_NOTE_MAX_WORDS)
+    counterEl.classList.toggle('over-limit', overLimit)
+    counterEl.classList.toggle('warning', !overLimit && words > LESSON_NOTE_MAX_WORDS * 0.9)
+    saveBtn.disabled = overLimit
+  }
+  textarea.addEventListener('input', updateCounter)
+  updateCounter()
+  textarea.focus()
+
+  container.querySelector('.lesson-note-cancel-btn').addEventListener('click', () => {
+    renderLessonNoteDisplay(myClass, today, currentText, userId)
+  })
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true
+    const newText = textarea.value.trim()
+    const { error } = await supabase.from('class_lesson_notes').upsert(
+      { class_id: myClass.id, date: today, note: newText || null, teacher_id: userId },
+      { onConflict: 'class_id,date' }
+    )
+    if (error) {
+      const msg = document.getElementById('lesson-note-edit-message')
+      msg.textContent = TEACHER_MESSAGES.attendanceForm.couldntSaveNote(error.message)
+      msg.className = 'error'
+      msg.classList.remove('hidden')
+      saveBtn.disabled = false
+      return
+    }
+    logAudit(
+      userId, 'teacher', 'attendance.lesson_note_edited', 'attendance', myClass.id,
+      `Edited ${myClass.name} lesson note for ${today}`,
+      { class_id: myClass.id, date: today, word_count: countWords(newText) }
+    )
+    showToast(TEACHER_MESSAGES.attendanceForm.noteSaved)
+    renderLessonNoteDisplay(myClass, today, newText, userId)
+  })
+}
+
+/**
+ * Builds the "sent chat message" bubble HTML for a lesson note -- shared by
+ * the teacher's own locked view (renderAlreadySubmittedMessage) and used
+ * the same way from admin.js's review modal, so the note reads identically
+ * wherever it's shown. Returns an empty string (no bubble at all) when
+ * there's no note to show, rather than an empty bubble.
+ *
+ * @param {string|null|undefined} noteText
+ * @returns {string} HTML, or '' if `noteText` is blank.
+ */
+export function buildLessonNoteBubbleHtml(noteText) {
+  if (!noteText || !noteText.trim()) return ''
+  // Escaped first, then newlines turned into <br> -- doing it in that order
+  // means a literal "<br>" a teacher actually typed can't sneak an extra
+  // line break in as real markup (see format.js's escapeHtml).
+  const safeHtml = escapeHtml(noteText.trim()).replace(/\n/g, '<br>')
+  return `
+    <div class="lesson-note-bubble-wrap">
+      <div class="lesson-note-bubble">${safeHtml}</div>
+    </div>
+  `
+}
+
+/**
+ * Render the "Take Attendance" tab: a Present/Absent toggle per student,
+ * a Present/Absent toggle per co-teacher (if any), and a submit button
+ * that batch-inserts today's student attendance AND teacher attendance
+ * records (see data_import/18_teacher_attendance.sql). The teacher who's
+ * actually signed in and hits Submit is recorded as present automatically
+ * -- no toggle for their own row, since submitting the form is itself
+ * proof they were there.
+ *
+ * If attendance was already submitted today and nothing's flagged, shows a
+ * read-only message instead so the same class can't be marked twice in one
+ * day. If an admin has flagged it for rework instead (see
+ * data_import/22_attendance_rework_flag.sql), the form reopens pre-filled
+ * with exactly what was submitted -- every toggle defaults to its existing
+ * status rather than resetting to Present -- so the teacher only has to
+ * change whatever was actually wrong and hit Resubmit; that updates the
+ * existing rows in place (and clears the flag) instead of inserting new
+ * ones.
+ *
+ * @param {object} myClass - The teacher's class row, including `.students`
+ *   and `.class_teachers` (each with `.teacher_id` and `.profiles.full_name`).
+ * @param {string} today - 'YYYY-MM-DD' for the current date.
+ * @param {string} userId - Supabase auth user id of the signed-in teacher --
+ *   recorded as `marked_by` on every row a fresh submission creates, and
+ *   automatically as `present` for their own teacher_attendance row.
+ * @param {object} existing
+ * @param {boolean} existing.hasRecords - Whether today's attendance rows
+ *   for this class already exist (fresh or flagged either way).
+ * @param {boolean} existing.needsRework - Whether they're flagged for rework.
+ * @param {Array} existing.studentRecords - Today's `attendance` rows for
+ *   this class, if any -- `{id, student_id, status, needs_rework}`.
+ * @param {Array} existing.teacherRecords - Today's `teacher_attendance`
+ *   rows for this class, if any -- `{id, teacher_id, status, needs_rework}`.
+ */
+function renderAttendanceForm(myClass, today, userId, existing) {
+  const tabContent = document.getElementById('tab-content')
+  const { hasRecords, needsRework, studentRecords, teacherRecords, existingNote } = existing
+
+  // Block duplicate submissions for the same day -- but only when nothing's
+  // flagged. A flagged submission falls through to the form below instead,
+  // pre-filled rather than blank.
+  if (hasRecords && !needsRework) {
+    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId)
     return
   }
 
-  // Build a toggle row for each student, defaulting to "Present"
-  const studentRows = (myClass.students || [])
-    .map(s => `
+  // Previously-submitted status per student/co-teacher, keyed for lookup
+  // while building each row below. Empty on a fresh (never-submitted) form,
+  // so every row just falls back to its default of Present as before.
+  const studentStatusById = new Map(studentRecords.map(r => [r.student_id, r.status]))
+  const teacherStatusById = new Map(teacherRecords.map(r => [r.teacher_id, r.status]))
+
+  // Build a toggle row for each student (alphabetical -- an optional
+  // class's roster spans multiple grades, so name order is more useful
+  // than whatever order the query happens to return), defaulting to
+  // "Present" unless reworking an existing submission, in which case it
+  // defaults to whatever was actually submitted.
+  const sortedStudents = [...(myClass.students || [])]
+    .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+  const studentRows = sortedStudents
+    .map((s, i) => {
+      const status = studentStatusById.get(s.id) || 'present'
+      return `
       <div class="student-row" data-student-id="${s.id}">
-        <span>${s.full_name}</span>
+        <span>${i + 1}. ${toTitleCase(s.full_name)}</span>
         <div class="status-toggle">
-          <button class="toggle-btn present-btn active" data-status="present">Present</button>
-          <button class="toggle-btn absent-btn" data-status="absent">Absent</button>
+          <button class="toggle-btn present-btn${status === 'present' ? ' active' : ''}" data-status="present">Present</button>
+          <button class="toggle-btn absent-btn${status === 'absent' ? ' active' : ''}" data-status="absent">Absent</button>
         </div>
       </div>
-    `)
+    `
+    })
     .join('')
+
+  // Co-teacher(s) assigned to this same class, excluding the signed-in
+  // teacher themselves -- their own attendance is recorded automatically
+  // below, not through a toggle. Only rendered when there's at least one.
+  const coTeachers = (myClass.class_teachers || [])
+    .filter(ct => ct.teacher_id !== userId)
+    .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
+  const coTeacherRows = coTeachers
+    .map(ct => {
+      const status = teacherStatusById.get(ct.teacher_id) || 'present'
+      return `
+      <div class="co-teacher-row" data-teacher-id="${ct.teacher_id}">
+        <span>${toTitleCase(ct.profiles?.full_name) || 'Teacher'}</span>
+        <div class="status-toggle">
+          <button class="toggle-btn present-btn${status === 'present' ? ' active' : ''}" data-status="present">Present</button>
+          <button class="toggle-btn absent-btn${status === 'absent' ? ' active' : ''}" data-status="absent">Absent</button>
+        </div>
+      </div>
+    `
+    })
+    .join('')
+  const coTeacherSectionHtml = coTeachers.length > 0 ? `
+    <h4>${TEACHER_MESSAGES.attendanceForm.coTeacherHeading}</h4>
+    <div id="co-teacher-list">${coTeacherRows}</div>
+  ` : ''
+
+  const reworkNoticeHtml = needsRework ? `<p class="rework-notice">${TEACHER_MESSAGES.attendanceForm.reworkNotice}</p>` : ''
+  const submitLabel = needsRework ? TEACHER_MESSAGES.attendanceForm.resubmitLabel : TEACHER_MESSAGES.attendanceForm.submitLabel
+
+  // Nothing to mark at all (no students, no co-teachers) -- the button
+  // stays disabled rather than letting a click submit an empty class.
+  // This is also what used to let a volunteer team (which has no real
+  // roster) slip a "submit" through and crash on teacher_attendance's
+  // unique constraint the second time it happened -- see this file's
+  // renderTeacherDashboard doc comment; that's fixed structurally now (a
+  // volunteer team never reaches this form at all), but this stays as a
+  // second line of defense for any genuinely empty attendance class too.
+  const hasAnyoneToMark = sortedStudents.length > 0 || coTeachers.length > 0
+
+  // "What did you teach today" -- optional, shares this same Submit /
+  // Resubmit button rather than having a save step of its own (see
+  // data_import/30_class_lesson_notes.sql). Pre-filled with whatever was
+  // already written when reworking; blank on a fresh submission.
+  const existingNoteText = existingNote?.note || ''
+  const lessonNoteSectionHtml = `
+    <div class="lesson-note-section">
+      <label for="lesson-note-textarea">${TEACHER_MESSAGES.attendanceForm.lessonNoteLabel}</label>
+      <textarea id="lesson-note-textarea" class="lesson-note-textarea" placeholder="${TEACHER_MESSAGES.attendanceForm.lessonNotePlaceholder}">${escapeHtml(existingNoteText)}</textarea>
+      <p id="lesson-note-counter" class="lesson-note-counter"></p>
+    </div>
+  `
 
   // Render the form layout
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
-    <div id="student-list">${studentRows}</div>
-    <button id="submit-attendance">Submit Attendance</button>
+    ${reworkNoticeHtml}
+    <div id="student-list">${studentRows || `<p>${TEACHER_MESSAGES.attendanceForm.noStudentsInClass}</p>`}</div>
+    ${coTeacherSectionHtml}
+    ${lessonNoteSectionHtml}
+    <button id="submit-attendance"${hasAnyoneToMark ? '' : ' disabled'}>${submitLabel}</button>
     <p id="submit-message" class="hidden"></p>
   `
 
   // Make toggle buttons switch between Present and Absent within each row
-  tabContent.querySelectorAll('.student-row').forEach(row => {
+  // (shared by both student rows and co-teacher rows)
+  tabContent.querySelectorAll('.student-row, .co-teacher-row').forEach(row => {
     row.querySelectorAll('.toggle-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         row.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'))
@@ -123,36 +622,160 @@ function renderAttendanceForm(myClass, today, alreadySubmitted, userId) {
     })
   })
 
-  // Batch-insert all attendance records on submit
+  // Live word counter for the lesson note -- past LESSON_NOTE_MAX_WORDS the
+  // count turns red and the submit button disables, same "can't submit
+  // until this is fixed" treatment as hasAnyoneToMark below. Re-checked on
+  // every keystroke rather than only at submit time, so the teacher sees
+  // the limit coming rather than hitting Submit and being told no.
+  const noteTextarea = document.getElementById('lesson-note-textarea')
+  const noteCounterEl = document.getElementById('lesson-note-counter')
+  const submitBtn = document.getElementById('submit-attendance')
+  const countWords = (text) => {
+    const trimmed = text.trim()
+    return trimmed.length === 0 ? 0 : trimmed.split(/\s+/).length
+  }
+  const updateNoteCounter = () => {
+    const words = countWords(noteTextarea.value)
+    const overLimit = words > LESSON_NOTE_MAX_WORDS
+    noteCounterEl.textContent = overLimit
+      ? TEACHER_MESSAGES.attendanceForm.lessonNoteOverLimit(LESSON_NOTE_MAX_WORDS)
+      : TEACHER_MESSAGES.attendanceForm.lessonNoteCounter(words, LESSON_NOTE_MAX_WORDS)
+    noteCounterEl.classList.toggle('over-limit', overLimit)
+    noteCounterEl.classList.toggle('warning', !overLimit && words > LESSON_NOTE_MAX_WORDS * 0.9)
+    submitBtn.disabled = !hasAnyoneToMark || overLimit
+  }
+  noteTextarea.addEventListener('input', updateNoteCounter)
+  updateNoteCounter() // initialize for the pre-filled rework case too
+
+  // Submit (or, when reworking, resubmit) on click. Disabled synchronously
+  // for the whole request, not just after it settles -- a fast double
+  // click (or a slow network turning one click into what feels like two)
+  // used to be able to fire this twice, and a second identical insert
+  // fails on teacher_attendance's (class_id, teacher_id, date) unique
+  // constraint. Re-enabled on error so a genuine failure can be retried.
   document.getElementById('submit-attendance').addEventListener('click', async () => {
-    const rows = tabContent.querySelectorAll('.student-row')
-    const records = []
+    submitBtn.disabled = true
+    const noteText = noteTextarea.value.trim()
+    let writes
 
-    // Read the current Present/Absent state out of the DOM for each row
-    rows.forEach(row => {
-      const studentId = row.dataset.studentId
-      const activeBtn = row.querySelector('.toggle-btn.active')
-      const status = activeBtn ? activeBtn.dataset.status : 'present'
-      records.push({
-        student_id: studentId,
-        class_id: myClass.id,
-        date: today,
-        status,
-        marked_by: userId
+    // Counted once up front (not branch-specific) for the audit summary
+    // below -- the DOM's current toggle state is the same regardless of
+    // whether this ends up as an insert or an update.
+    const presentCount = [...tabContent.querySelectorAll('.student-row, .co-teacher-row')]
+      .filter(row => (row.querySelector('.toggle-btn.active')?.dataset.status || 'present') === 'present').length + 1 // +1 for the signed-in teacher's own always-present row
+    const absentCount = [...tabContent.querySelectorAll('.student-row, .co-teacher-row')]
+      .filter(row => row.querySelector('.toggle-btn.active')?.dataset.status === 'absent').length
+
+    // The lesson note is upserted by (class_id, date) either way -- fresh
+    // submission or rework resubmit -- rather than branching on whether a
+    // row already exists: the unique constraint from
+    // data_import/30_class_lesson_notes.sql plus the update policy from
+    // data_import/31_class_lesson_notes_editable.sql make a plain upsert
+    // work in both cases, so there's no need to track the note's row id
+    // through this function at all. Written even when left blank
+    // (note: null), so this table's (class_id, date) always lines up 1:1
+    // with a submitted day, same as attendance/teacher_attendance.
+    const noteWrite = supabase.from('class_lesson_notes').upsert(
+      { class_id: myClass.id, date: today, note: noteText || null, teacher_id: userId, needs_rework: false },
+      { onConflict: 'class_id,date' }
+    )
+
+    if (needsRework) {
+      // Reworking an existing submission: update each already-existing row
+      // in place (by its id) instead of inserting new ones, and clear its
+      // needs_rework flag -- the row IS the original submission, just
+      // corrected. RLS only allows this while needs_rework is still true
+      // (see data_import/22_attendance_rework_flag.sql), which is exactly
+      // the state this branch only runs in.
+      const studentRecordIdByStudentId = new Map(studentRecords.map(r => [r.student_id, r.id]))
+      const teacherRecordIdByTeacherId = new Map(teacherRecords.map(r => [r.teacher_id, r.id]))
+
+      const studentUpdates = [...tabContent.querySelectorAll('.student-row')].map(row => {
+        const activeBtn = row.querySelector('.toggle-btn.active')
+        const status = activeBtn ? activeBtn.dataset.status : 'present'
+        const recordId = studentRecordIdByStudentId.get(row.dataset.studentId)
+        return supabase.from('attendance').update({ status, needs_rework: false }).eq('id', recordId)
       })
-    })
 
-    const { error } = await supabase.from('attendance').insert(records)
+      // The signed-in teacher's own row is reset to present + unflagged
+      // too (submitting is itself proof they were there, same as a fresh
+      // submission), plus one update per co-teacher row from whatever its
+      // toggle is currently set to. Either row might not exist if the
+      // original submission predates a co-teacher being added -- skipped
+      // rather than erroring in that edge case.
+      const teacherUpdates = []
+      const ownRecordId = teacherRecordIdByTeacherId.get(userId)
+      if (ownRecordId) {
+        teacherUpdates.push(supabase.from('teacher_attendance').update({ status: 'present', needs_rework: false }).eq('id', ownRecordId))
+      }
+      tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
+        const activeBtn = row.querySelector('.toggle-btn.active')
+        const status = activeBtn ? activeBtn.dataset.status : 'present'
+        const recordId = teacherRecordIdByTeacherId.get(row.dataset.teacherId)
+        if (recordId) teacherUpdates.push(supabase.from('teacher_attendance').update({ status, needs_rework: false }).eq('id', recordId))
+      })
+
+      writes = Promise.all([...studentUpdates, ...teacherUpdates, noteWrite])
+    } else {
+      // Fresh submission: batch-insert one row per student plus one per
+      // teacher, same as always.
+      const records = [...tabContent.querySelectorAll('.student-row')].map(row => {
+        const activeBtn = row.querySelector('.toggle-btn.active')
+        const status = activeBtn ? activeBtn.dataset.status : 'present'
+        return { student_id: row.dataset.studentId, class_id: myClass.id, date: today, status, marked_by: userId }
+      })
+
+      // Teacher attendance: the signed-in teacher is always recorded
+      // present (they're the one submitting right now), plus one row per
+      // co-teacher from whatever their toggle is currently set to.
+      const teacherRecordsToInsert = [
+        { class_id: myClass.id, teacher_id: userId, date: today, status: 'present', marked_by: userId }
+      ]
+      tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
+        const activeBtn = row.querySelector('.toggle-btn.active')
+        const status = activeBtn ? activeBtn.dataset.status : 'present'
+        teacherRecordsToInsert.push({ class_id: myClass.id, teacher_id: row.dataset.teacherId, date: today, status, marked_by: userId })
+      })
+
+      // All three writes are independent tables -- run them together rather
+      // than one-then-the-other, so a slow network doesn't make this feel
+      // like several separate submits.
+      writes = Promise.all([
+        supabase.from('attendance').insert(records),
+        supabase.from('teacher_attendance').insert(teacherRecordsToInsert),
+        noteWrite
+      ])
+    }
+
+    const results = await writes
+    const firstError = results.find(r => r.error)?.error
     const msg = document.getElementById('submit-message')
 
-    if (error) {
-      msg.textContent = 'Error: ' + error.message
+    if (firstError) {
+      msg.textContent = TEACHER_MESSAGES.attendanceForm.submitError(firstError.message)
       msg.className = 'error'
+      // Let them retry -- see the click handler's doc comment above for
+      // why this was disabled in the first place.
+      submitBtn.disabled = false
     } else {
-      msg.textContent = 'Attendance submitted!'
-      msg.className = 'success'
-      // Prevent a second submission now that today's records exist
-      document.getElementById('submit-attendance').disabled = true
+      logAudit(
+        userId, 'teacher',
+        needsRework ? 'attendance.resubmitted' : 'attendance.submitted',
+        'attendance', myClass.id,
+        `${needsRework ? 'Resubmitted' : 'Submitted'} ${myClass.name} attendance for ${today} (${presentCount} present, ${absentCount} absent)`,
+        { class_id: myClass.id, date: today, present_count: presentCount, absent_count: absentCount, lesson_note_word_count: countWords(noteText) }
+      )
+      // Toast gives the one-time "you just did that" confirmation (worded
+      // differently for a fresh submit vs. a rework resubmit); the screen
+      // itself replaces the whole form with the locked read-only view
+      // (see renderAlreadySubmittedMessage) rather than just disabling
+      // the submit button in place -- otherwise every Present/Absent
+      // toggle stayed clickable with nothing left for a click to do,
+      // which looked like the screen could still be changed when it
+      // couldn't. Today's records are settled now; only an admin
+      // rejecting this for rework brings the form back.
+      showToast(needsRework ? TEACHER_MESSAGES.attendanceForm.reworkSubmitted : TEACHER_MESSAGES.attendanceForm.attendanceSubmitted)
+      renderAlreadySubmittedMessage(myClass, today, noteText, userId)
     }
   })
 }
@@ -190,10 +813,567 @@ async function renderTeacherHistory(myClass) {
     html += `<h4>${date}</h4><ul>`
     entries.forEach(entry => {
       const statusClass = entry.status === 'present' ? 'present' : 'absent'
-      html += `<li class="${statusClass}">${entry.students?.full_name} — ${entry.status}</li>`
+      html += `<li class="${statusClass}">${toTitleCase(entry.students?.full_name)} — ${entry.status}</li>`
     })
     html += '</ul>'
   }
 
   tabContent.innerHTML = html
+}
+
+/**
+ * "Calendar" tab for teachers: the same class_sessions schedule the admin
+ * manages on the Calendar tab (see data_import/15_class_sessions.sql) --
+ * date, label, type, and whether attendance is open, same as before, no
+ * edit controls for any of that (still contact-your-admin territory). New:
+ * each upcoming, attendance-open date now also carries an Available/
+ * Unavailable toggle (see data_import/27_teacher_availability.sql) so a
+ * teacher can mark whether they expect to be there, changeable any time by
+ * tapping it again -- saves immediately, no separate submit step. Past
+ * dates and closed dates stay purely read-only, same as before, since
+ * there's nothing to mark availability FOR on either. Shown to every
+ * registered teacher whether or not they have a class assigned yet (see
+ * the no-class branch in renderTeacherDashboard above), split into
+ * Upcoming (shown open) and a collapsed Past Dates section.
+ *
+ * @param {string} userId - Signed-in teacher's id -- whose own
+ *   availability rows to load and save, and the actor attributed in the
+ *   audit trail for every mark (see audit.js).
+ */
+async function renderTeacherCalendar(userId) {
+  const tabContent = document.getElementById('tab-content')
+  const today = todayStr()
+
+  const [{ data: sessions, error }, { data: myAvailability }] = await Promise.all([
+    supabase.from('class_sessions').select('*').order('session_date', { ascending: true }),
+    // This teacher's own marks across the whole calendar -- cheap enough
+    // to load in full alongside the sessions themselves rather than
+    // re-querying per row.
+    supabase.from('teacher_availability').select('session_date, status').eq('teacher_id', userId)
+  ])
+
+  if (error) {
+    tabContent.innerHTML = `<p class="error">Couldn't load the calendar: ${error.message}</p>`
+    return
+  }
+
+  const statusByDate = new Map((myAvailability || []).map(a => [a.session_date, a.status]))
+
+  const allSessions = sessions || []
+  const upcoming = allSessions.filter(s => s.session_date >= today)
+  const past = allSessions.filter(s => s.session_date < today)
+  const dayTypeLabels = { regular: 'Regular', special_event: 'Special event', holiday: 'Holiday' }
+
+  // Availability is only markable on an upcoming date that's actually
+  // open for attendance -- a holiday or an unopened special event has no
+  // class to be available FOR, and a past date is moot either way.
+  const buildRows = (list, markable) => list
+    .map(s => {
+      const canMark = markable && s.is_attendance_day
+      // Defaults to 'available' when this teacher has never marked this
+      // date -- see data_import/27_teacher_availability.sql and this
+      // tab's hint text: everyone is assumed available unless they say
+      // otherwise, so the toggle shows Available pre-selected rather than
+      // neither button highlighted. No row is written just from this
+      // default display -- only an actual click (Available or
+      // Unavailable) upserts one, in wireAvailabilityToggles below.
+      const status = statusByDate.get(s.session_date) || 'available'
+      const availabilityHtml = canMark ? `
+        <div class="status-toggle availability-toggle" data-session-date="${s.session_date}">
+          <button type="button" class="toggle-btn available-btn${status === 'available' ? ' active' : ''}" data-status="available">${TEACHER_MESSAGES.availability.markAvailable}</button>
+          <button type="button" class="toggle-btn unavailable-btn${status === 'unavailable' ? ' active' : ''}" data-status="unavailable">${TEACHER_MESSAGES.availability.markUnavailable}</button>
+        </div>
+      ` : ''
+      return `
+      <div class="session-row session-row-readonly${s.session_date === today ? ' session-row-today' : ''}">
+        <span class="session-date">${s.session_date}${s.session_date === today ? ' <em>(Today)</em>' : ''}</span>
+        <span class="session-label-text">${s.label}</span>
+        <span class="session-type-badge">${dayTypeLabels[s.day_type] || s.day_type}</span>
+        <span class="session-status-badge ${s.is_attendance_day ? 'session-open' : 'session-closed'}">${s.is_attendance_day ? 'Attendance Open' : 'Attendance Closed'}</span>
+        ${availabilityHtml}
+      </div>
+    `
+    })
+    .join('') || '<p class="no-sessions">No dates in this section.</p>'
+
+  tabContent.innerHTML = `
+    <p class="drag-hint">The full HTYG schedule -- which dates classes meet, and which are holidays or special events. This is read-only; contact your admin to add or change a date.</p>
+    <p class="drag-hint">${TEACHER_MESSAGES.availability.hint}</p>
+    <h4>Upcoming</h4>
+    <div class="session-list">${buildRows(upcoming, true)}</div>
+    ${past.length > 0 ? `
+      <details class="past-sessions">
+        <summary>Past Dates (${past.length})</summary>
+        <div class="session-list">${buildRows(past, false)}</div>
+      </details>
+    ` : ''}
+  `
+
+  wireAvailabilityToggles(tabContent, userId)
+}
+
+/**
+ * Wires up every Available/Unavailable toggle rendered by
+ * renderTeacherCalendar above -- one listener per button, scoped to its
+ * own `.availability-toggle` group so clicking one never affects another
+ * date's toggle. Saves on click via upsert (teacher_id, session_date) --
+ * marking the same date again just overwrites the existing row rather
+ * than erroring, so "change it any time" never needs a delete step first.
+ *
+ * @param {HTMLElement} tabContent
+ * @param {string} userId
+ */
+function wireAvailabilityToggles(tabContent, userId) {
+  tabContent.querySelectorAll('.availability-toggle').forEach(toggle => {
+    const sessionDate = toggle.dataset.sessionDate
+    toggle.querySelectorAll('.toggle-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const status = btn.dataset.status
+        // Optimistic highlight, reverted below if the save fails -- same
+        // spirit as admin.js's Calendar tab toggle, so this feels
+        // immediate rather than waiting on a round trip before anything
+        // visibly changes.
+        const previouslyActive = toggle.querySelector('.toggle-btn.active')
+        toggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'))
+        btn.classList.add('active')
+        toggle.querySelectorAll('.toggle-btn').forEach(b => { b.disabled = true })
+
+        const { error } = await supabase
+          .from('teacher_availability')
+          .upsert({ teacher_id: userId, session_date: sessionDate, status }, { onConflict: 'teacher_id,session_date' })
+
+        toggle.querySelectorAll('.toggle-btn').forEach(b => { b.disabled = false })
+
+        if (error) {
+          showToast(TEACHER_MESSAGES.availability.couldntSave(error))
+          toggle.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'))
+          previouslyActive?.classList.add('active')
+          return
+        }
+
+        showToast(status === 'available' ? TEACHER_MESSAGES.availability.savedAvailable : TEACHER_MESSAGES.availability.savedUnavailable)
+        logAudit(
+          userId, 'teacher', 'teacher_availability.marked', 'teacher_availability', null,
+          `Marked ${status} for ${sessionDate}`,
+          { session_date: sessionDate, status }
+        )
+      })
+    })
+  })
+}
+
+/**
+ * "Log Hours" tab: lets a team's teacher (or "senior" -- this app has no
+ * separate role for that, see DECISIONS.md) submit volunteer hours for
+ * one or more students at once, on any day -- ad hoc, not gated by the
+ * shared class_sessions attendance calendar the way Take Attendance is
+ * (a team may not meet on the same schedule as regular classes). Only
+ * shown at all when the signed-in teacher is assigned to at least one
+ * volunteer team (see renderTeacherDashboard's volunteerTeams).
+ *
+ * Every submission here is unapproved (`approved: false`) -- the admin's
+ * Volunteer Hours tab is where it actually becomes official, by accepting
+ * or overriding it, the same way an admin reviews submitted attendance
+ * rather than teachers marking students final themselves. See
+ * data_import/23_volunteer_hours.sql.
+ *
+ * Eligibility (Madhyamshishyas/Yuvashishyas only, i.e. 6th-12th grade --
+ * see VOLUNTEER_ELIGIBLE_GRADES) is enforced here by simply never listing
+ * an ineligible student, not by a database-level rule.
+ *
+ * Each student's row also shows their attendance percentage (overall, and
+ * over just the last 30 days -- see fetchAttendancePercentages) so a
+ * teacher has that context right here while deciding who to give a
+ * volunteer-hours opportunity to, instead of needing to go check the
+ * admin's Records tab (which teachers don't have access to anyway).
+ *
+ * "Very easy to choose selected kids" is the point of the two-list layout
+ * below: tapping a student in the available list moves them straight into
+ * a separate Selected list beneath it, so a long roster gets shorter as
+ * you go instead of staying just as cluttered with checkmarks buried in
+ * it -- finding the *next* kid never means scanning past everyone you
+ * already picked. Tapping a name in the Selected list moves them back. A
+ * search box and grade filter narrow the available list (never touching
+ * who's already selected, so narrowing by a second grade never loses a
+ * first grade's picks), plus one-click Select All / Clear over whatever's
+ * currently available.
+ *
+ * @param {Array} volunteerTeams - This teacher's volunteer-team class rows.
+ * @param {string} userId - Signed-in teacher's id, recorded as `logged_by`.
+ */
+/**
+ * Subtracts `days` whole days from a 'YYYY-MM-DD' date string, returning
+ * another 'YYYY-MM-DD'. Parses at UTC noon (rather than midnight) purely
+ * to keep the subtraction away from any midnight-adjacent DST edge --
+ * since this only ever moves by whole days, the specific time of day
+ * doesn't otherwise matter. Not a general-purpose date util -- just what
+ * fetchAttendancePercentages needs for its 30-day cutoff, computed from
+ * calendar.js's todayStr() (Central time) rather than the browser's own
+ * local time, same reasoning as todayStr's own doc comment.
+ *
+ * @param {string} dateStr - 'YYYY-MM-DD'
+ * @param {number} days
+ * @returns {string} 'YYYY-MM-DD'
+ */
+function dateMinusDays(dateStr, days) {
+  const d = new Date(`${dateStr}T12:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - days)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Computes each student's overall attendance percentage and their
+ * percentage over just the last 30 days, from every attendance row on
+ * record for them across any class -- a student's grade homeroom and, if
+ * they're opted into one, their Gita/Bhajan class both count, same as how
+ * admin.js's Records tab tallies a student's attendance across whatever
+ * classes appear in its date range. Used by the Log Hours tab so a teacher
+ * can see this before deciding whether to give a student a volunteer-hours
+ * opportunity -- see renderLogHoursTab.
+ *
+ * Requires data_import/35_teacher_view_all_attendance.sql to have been run
+ * -- without it, RLS silently limits this query to whatever (if anything)
+ * the teacher's own class-assignment already lets them see, understating
+ * every other student's percentage rather than erroring outright.
+ *
+ * @param {string[]} studentIds
+ * @returns {Promise<Map<string, {overallPct: number, last30Pct: number|null}>>}
+ *   Keyed by student_id. A student with zero attendance rows on record at
+ *   all has no entry in the returned map (renderLogHoursTab treats a
+ *   missing entry as "no data yet"); one with rows overall but none in the
+ *   last 30 days gets `last30Pct: null` while `overallPct` is still a
+ *   real number.
+ */
+async function fetchAttendancePercentages(studentIds) {
+  const result = new Map()
+  if (studentIds.length === 0) return result
+
+  const { data, error } = await supabase
+    .from('attendance')
+    .select('student_id, status, date')
+    .in('student_id', studentIds)
+
+  if (error || !data) {
+    // Not surfaced as a form error -- the rest of the Log Hours tab (and
+    // logging hours itself) works fine without this; a student's badge
+    // just falls back to "no data yet" below instead.
+    console.warn('attendance percentage lookup failed:', error?.message)
+    return result
+  }
+
+  const cutoffStr = dateMinusDays(todayStr(), 30)
+
+  // student_id -> running totals, tallied in one pass over every row.
+  const totals = new Map()
+  data.forEach(r => {
+    if (!totals.has(r.student_id)) {
+      totals.set(r.student_id, { present: 0, total: 0, presentLast30: 0, totalLast30: 0 })
+    }
+    const t = totals.get(r.student_id)
+    t.total++
+    if (r.status === 'present') t.present++
+    // 'YYYY-MM-DD' strings compare the same as real dates would here,
+    // since every date in this table is already stored in that exact
+    // format -- no need to parse either side into a Date first.
+    if (r.date >= cutoffStr) {
+      t.totalLast30++
+      if (r.status === 'present') t.presentLast30++
+    }
+  })
+
+  totals.forEach((t, studentId) => {
+    result.set(studentId, {
+      overallPct: Math.round((t.present / t.total) * 100),
+      last30Pct: t.totalLast30 > 0 ? Math.round((t.presentLast30 / t.totalLast30) * 100) : null
+    })
+  })
+
+  return result
+}
+
+async function renderLogHoursTab(volunteerTeams, userId) {
+  const tabContent = document.getElementById('tab-content')
+
+  const { data: eligibleStudents, error } = await supabase
+    .from('students')
+    .select('id, full_name, grade_level')
+    .in('grade_level', VOLUNTEER_ELIGIBLE_GRADES)
+
+  if (error) {
+    tabContent.innerHTML = `<p class="error">${LOG_HOURS_MESSAGES.submitError(error.message)}</p>`
+    return
+  }
+
+  // Grade order, then name within a grade -- same canonical ordering used
+  // throughout the admin dashboard.
+  const gradeRank = new Map(GRADE_ORDER.map((g, i) => [g, i]))
+  const sortedStudents = [...(eligibleStudents || [])].sort((a, b) => {
+    const rankA = gradeRank.has(a.grade_level) ? gradeRank.get(a.grade_level) : GRADE_ORDER.length
+    const rankB = gradeRank.has(b.grade_level) ? gradeRank.get(b.grade_level) : GRADE_ORDER.length
+    if (rankA !== rankB) return rankA - rankB
+    return (a.full_name || '').localeCompare(b.full_name || '')
+  })
+
+  // Attendance percentages -- see fetchAttendancePercentages's doc comment
+  // and data_import/35_teacher_view_all_attendance.sql (the RLS policy
+  // that lets this query see more than just the teacher's own class).
+  // Computed once up front for the whole eligible roster, then stashed
+  // directly on each student object, so filtering/searching the list below
+  // never has to refetch.
+  const attendanceByStudent = await fetchAttendancePercentages(sortedStudents.map(s => s.id))
+  sortedStudents.forEach(s => {
+    const stats = attendanceByStudent.get(s.id)
+    s.overallPct = stats ? stats.overallPct : null
+    s.last30Pct = stats ? stats.last30Pct : null
+  })
+
+  // A team picker only when this teacher actually has more than one team
+  // -- the common case (one team) just names it, nothing to choose.
+  const teamPickerHtml = volunteerTeams.length > 1 ? `
+    <label>${LOG_HOURS_MESSAGES.teamSelectLabel}
+      <select id="log-hours-team-select">
+        ${volunteerTeams.map(t => `<option value="${t.id}">${t.name}</option>`).join('')}
+      </select>
+    </label>
+  ` : `<p class="log-hours-team-name"><strong>${volunteerTeams[0].name}</strong></p>`
+
+  // Grade dropdown only lists grades that actually have an eligible student
+  // in them, in canonical GRADE_ORDER (not insertion order) -- so it never
+  // offers, say, "11th Grade" as a choice if this teacher's roster happens
+  // to have none this year.
+  const gradesPresent = GRADE_ORDER.filter(g => sortedStudents.some(s => s.grade_level === g))
+  const gradeFilterHtml = gradesPresent.length > 1 ? `
+    <select id="log-hours-grade-filter">
+      <option value="">${LOG_HOURS_MESSAGES.allGradesOption}</option>
+      ${gradesPresent.map(g => `<option value="${g}">${g}</option>`).join('')}
+    </select>
+  ` : ''
+
+  tabContent.innerHTML = `
+    <div class="section-header-row log-hours-top-row">
+      <div class="log-hours-team-picker">${teamPickerHtml}</div>
+      <input type="text" id="log-hours-note" form="log-hours-form" placeholder="${LOG_HOURS_MESSAGES.notePlaceholder}" required />
+    </div>
+    <form id="log-hours-form">
+      <div class="log-hours-meta">
+        <label>${LOG_HOURS_MESSAGES.dateLabel} <input type="date" id="log-hours-date" value="${todayStr()}" required /></label>
+        <label>${LOG_HOURS_MESSAGES.hoursLabel} <input type="number" id="log-hours-hours" step="0.25" min="0.25" required /></label>
+      </div>
+
+      <h4>${LOG_HOURS_MESSAGES.studentsHeading}</h4>
+      <div class="log-hours-controls">
+        ${gradeFilterHtml}
+        <input type="text" id="log-hours-search" placeholder="${LOG_HOURS_MESSAGES.searchPlaceholder}" />
+        <button type="button" id="log-hours-select-all">${LOG_HOURS_MESSAGES.selectAllVisible}</button>
+        <button type="button" id="log-hours-clear">${LOG_HOURS_MESSAGES.clearSelection}</button>
+      </div>
+      <div id="log-hours-student-list"></div>
+
+      <h4 id="log-hours-selected-heading">${LOG_HOURS_MESSAGES.selectedHeading(0)}</h4>
+      <div id="log-hours-selected-list"></div>
+
+      <button type="submit" id="log-hours-submit" disabled>${LOG_HOURS_MESSAGES.submitButton(0)}</button>
+      <p id="log-hours-message" class="hidden"></p>
+    </form>
+  `
+
+  wireLogHoursForm(volunteerTeams, userId, sortedStudents)
+}
+
+/**
+ * Wires up the Log Hours form: the two-list tap-to-select/tap-to-deselect
+ * behavior (see renderLogHoursTab's doc comment), search + grade filtering
+ * of the available list, Select All / Clear, and the batch submit itself
+ * (one `volunteer_hours` row per selected student, all sharing the same
+ * date/hours/note from the form).
+ *
+ * @param {Array} volunteerTeams - See renderLogHoursTab.
+ * @param {string} userId
+ * @param {Array} sortedStudents - Every eligible student, `{id, full_name,
+ *   grade_level}`, in the grade-then-name order renderLogHoursTab sorted
+ *   them into -- both lists below redraw from this plus `selectedIds`, so
+ *   it's the only place either list's ordering comes from.
+ */
+function wireLogHoursForm(volunteerTeams, userId, sortedStudents) {
+  const form = document.getElementById('log-hours-form')
+  const searchInput = document.getElementById('log-hours-search')
+  const selectAllBtn = document.getElementById('log-hours-select-all')
+  const clearBtn = document.getElementById('log-hours-clear')
+  const submitBtn = document.getElementById('log-hours-submit')
+  const availableList = document.getElementById('log-hours-student-list')
+  const selectedList = document.getElementById('log-hours-selected-list')
+  const selectedHeading = document.getElementById('log-hours-selected-heading')
+  const msg = document.getElementById('log-hours-message')
+  // Only present when this teacher has more than one team -- see
+  // renderLogHoursTab's teamPickerHtml.
+  const teamSelect = document.getElementById('log-hours-team-select')
+  // Only present when the eligible roster spans more than one grade -- see
+  // renderLogHoursTab's gradeFilterHtml.
+  const gradeFilter = document.getElementById('log-hours-grade-filter')
+
+  const showMessage = (text, kind) => {
+    msg.textContent = text
+    msg.className = kind
+    msg.classList.remove('hidden')
+  }
+
+  // The one source of truth for who's picked -- both lists are just two
+  // views over this plus the current search/grade filter, fully redrawn
+  // together on every change rather than edited in place, so they can
+  // never drift out of sync with each other or with the submit button.
+  const selectedIds = new Set()
+
+  const matchesFilters = (s, term, grade) => {
+    const nameMatch = term.length === 0 || toTitleCase(s.full_name).toLowerCase().includes(term)
+    const gradeMatch = grade.length === 0 || s.grade_level === grade
+    return nameMatch && gradeMatch
+  }
+
+  const rowHtml = (s) => `
+    <button type="button" class="log-hours-student-row" data-id="${s.id}">
+      <span class="log-hours-student-top">
+        <span>${toTitleCase(s.full_name)}</span>
+        <span class="log-hours-student-grade">${s.grade_level || ''}</span>
+      </span>
+      <span class="log-hours-student-attendance">${LOG_HOURS_MESSAGES.attendancePercentLabel(s.overallPct, s.last30Pct)}</span>
+    </button>
+  `
+
+  // Redraws both lists from `selectedIds` plus the current search/grade
+  // filter, and the submit button's count/enabled state -- called after
+  // every change: search, grade filter, a tap in either list, Select All,
+  // or Clear. A selected student never shows in the available list no
+  // matter what the filter is currently set to (removing them from the
+  // list you're browsing is the whole point -- see renderLogHoursTab's doc
+  // comment); the Selected list, in turn, is never filtered by search/
+  // grade at all, so narrowing the available list to look for one more
+  // kid never hides someone already picked.
+  const render = () => {
+    const term = searchInput.value.trim().toLowerCase()
+    const grade = gradeFilter ? gradeFilter.value : ''
+
+    const available = sortedStudents.filter(s => !selectedIds.has(s.id) && matchesFilters(s, term, grade))
+    availableList.innerHTML = available.map(rowHtml).join('') || `<p class="log-hours-empty-hint">${
+      sortedStudents.length === 0 ? LOG_HOURS_MESSAGES.noEligibleStudents : LOG_HOURS_MESSAGES.noAvailableStudents
+    }</p>`
+
+    const selected = sortedStudents.filter(s => selectedIds.has(s.id))
+    selectedList.innerHTML = selected.map(rowHtml).join('') || `<p class="log-hours-empty-hint">${LOG_HOURS_MESSAGES.noSelectedStudents}</p>`
+    selectedHeading.textContent = LOG_HOURS_MESSAGES.selectedHeading(selected.length)
+
+    // Fresh nodes every render (innerHTML above just replaced them), so
+    // fresh listeners each time -- no stale handlers left over from a
+    // previous render to worry about.
+    availableList.querySelectorAll('.log-hours-student-row').forEach(row => {
+      row.addEventListener('click', () => {
+        selectedIds.add(row.dataset.id)
+        render()
+      })
+    })
+    selectedList.querySelectorAll('.log-hours-student-row').forEach(row => {
+      row.addEventListener('click', () => {
+        selectedIds.delete(row.dataset.id)
+        render()
+      })
+    })
+
+    // Starts disabled (see renderLogHoursTab's template) and only enables
+    // once the teacher has actually picked someone -- "select a student"
+    // is this form's version of "any task performed" (see DECISIONS.md),
+    // so there's no way to submit an empty batch by accident.
+    submitBtn.textContent = LOG_HOURS_MESSAGES.submitButton(selected.length)
+    submitBtn.disabled = selected.length === 0
+  }
+
+  searchInput.addEventListener('input', render)
+  if (gradeFilter) gradeFilter.addEventListener('change', render)
+
+  // Adds every currently-available (i.e. matching the current search/
+  // grade filter, not already selected) student to the selection -- same
+  // "Select All Visible" scope the old checkbox list had.
+  selectAllBtn.addEventListener('click', () => {
+    const term = searchInput.value.trim().toLowerCase()
+    const grade = gradeFilter ? gradeFilter.value : ''
+    sortedStudents
+      .filter(s => !selectedIds.has(s.id) && matchesFilters(s, term, grade))
+      .forEach(s => selectedIds.add(s.id))
+    render()
+  })
+
+  // Clears every selection, regardless of the current search/grade filter
+  // -- same as the old checkbox list's Clear, which reset all checkboxes,
+  // not just the ones currently visible.
+  clearBtn.addEventListener('click', () => {
+    selectedIds.clear()
+    render()
+  })
+
+  render()
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const ids = [...selectedIds]
+    const hours = Number(document.getElementById('log-hours-hours').value)
+    const date = document.getElementById('log-hours-date').value
+    const note = document.getElementById('log-hours-note').value.trim()
+    const classId = teamSelect ? teamSelect.value : volunteerTeams[0].id
+
+    // Belt-and-suspenders -- the button itself is disabled whenever
+    // nothing's selected (see render), but this stays as a guard against
+    // firing the request some other way (e.g. hitting Enter in a text
+    // field).
+    if (ids.length === 0) {
+      showMessage(LOG_HOURS_MESSAGES.noStudentsSelected, 'error')
+      return
+    }
+    if (!hours || hours <= 0) {
+      showMessage(LOG_HOURS_MESSAGES.invalidHours, 'error')
+      return
+    }
+    // Same belt-and-suspenders as the two checks above -- the `required`
+    // attribute on the note field covers the normal case, this covers
+    // anything that bypasses native form validation.
+    if (!note) {
+      showMessage(LOG_HOURS_MESSAGES.noteRequired, 'error')
+      return
+    }
+
+    // Disabled for the whole request, not just after it settles -- same
+    // double-click guard as the Take Attendance submit button (see
+    // renderAttendanceForm), so this batch can't go in twice.
+    submitBtn.disabled = true
+
+    // One row per selected student, all unapproved -- see this tab's doc
+    // comment on why nothing here is final until the admin reviews it.
+    const records = ids.map(studentId => ({
+      class_id: classId,
+      student_id: studentId,
+      date,
+      hours,
+      note,
+      approved: false,
+      logged_by: userId
+    }))
+
+    const { error } = await supabase.from('volunteer_hours').insert(records)
+    if (error) {
+      showMessage(LOG_HOURS_MESSAGES.submitError(error.message), 'error')
+      // Let them retry -- the selection is still intact.
+      submitBtn.disabled = false
+      return
+    }
+
+    showMessage(LOG_HOURS_MESSAGES.submitted(ids.length), 'success')
+    const teamName = volunteerTeams.find(t => t.id === classId)?.name || 'volunteer team'
+    logAudit(
+      userId, 'teacher', 'volunteer_hours.logged', 'volunteer_hours', null,
+      `Logged ${hours} hrs for ${ids.length} student${ids.length === 1 ? '' : 's'} on ${date} (${teamName})`,
+      { class_id: classId, team_name: teamName, date, hours, note, student_ids: ids }
+    )
+    selectedIds.clear()
+    document.getElementById('log-hours-note').value = ''
+    // Back to empty/disabled -- the selection that just submitted is
+    // cleared, so there's nothing left to submit until they pick again.
+    render()
+  })
 }
