@@ -12,16 +12,20 @@
        #app-title, #app-logo, and #app-footer carry static fallback
        text/values so the page never looks broken before main.js runs, but
        main.js is what keeps them in sync with src/config.js -- change
-       branding there, not here. -->
+       branding there, not here. The .header-brand/.app-logo/.app-footer
+       classes are what src/style.css styles (see its "App shell / header"
+       section) -- the ids are only for main.js's getElementById lookups. -->
   <div id="app">
     <header>
-      <img id="app-logo" alt="" />
-      <h1 id="app-title">School Attendance System</h1>
+      <div class="header-brand">
+        <img id="app-logo" class="app-logo" alt="" />
+        <h1 id="app-title">School Attendance System</h1>
+      </div>
       <!-- Hidden until a user is signed in (see src/main.js) -->
       <button id="sign-out-btn" class="hidden">Sign Out</button>
     </header>
     <main id="main-content"></main>
-    <footer id="app-footer"></footer>
+    <footer id="app-footer" class="app-footer"></footer>
   </div>
 
   <!-- App entry point: sets up auth listener + routes to the right view -->
