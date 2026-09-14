@@ -8,14 +8,20 @@
 </head>
 <body>
   <!-- App shell: header is static; #main-content is swapped out by
-       main.js depending on auth state (login form, admin, or teacher view) -->
+       main.js depending on auth state (login form, admin, or teacher view).
+       #app-title, #app-logo, and #app-footer carry static fallback
+       text/values so the page never looks broken before main.js runs, but
+       main.js is what keeps them in sync with src/config.js -- change
+       branding there, not here. -->
   <div id="app">
     <header>
-      <h1>School Attendance System</h1>
+      <img id="app-logo" alt="" />
+      <h1 id="app-title">School Attendance System</h1>
       <!-- Hidden until a user is signed in (see src/main.js) -->
       <button id="sign-out-btn" class="hidden">Sign Out</button>
     </header>
     <main id="main-content"></main>
+    <footer id="app-footer"></footer>
   </div>
 
   <!-- App entry point: sets up auth listener + routes to the right view -->
