@@ -1688,30 +1688,68 @@ async function renderStudentsTab(userId) {
 async function renderRecordsTab() {
   const tabContent = document.getElementById('tab-content')
   const today = todayStr()
+  // Default "From" to a week ago rather than today, so the Records tab
+  // opens showing the last 7 days (today inclusive) instead of a single
+  // day -- the admin can still narrow it back down to one day via the
+  // date pickers below. Computed at UTC noon, same DST-safe approach as
+  // teacher.js's dateMinusDays, since this is the only place admin.js
+  // needs to subtract days from a date string.
+  const weekAgo = (() => {
+    const d = new Date(`${today}T12:00:00Z`)
+    d.setUTCDate(d.getUTCDate() - 6)
+    return d.toISOString().slice(0, 10)
+  })()
 
   tabContent.innerHTML = `
     <div class="date-range">
-      <label>From: <input type="date" id="start-date" value="${today}" /></label>
+      <label>From: <input type="date" id="start-date" value="${weekAgo}" /></label>
       <label>To: <input type="date" id="end-date" value="${today}" /></label>
       <button id="filter-btn">Filter</button>
     </div>
 
-    <section class="records-section">
-      <h3>Attendance Records</h3>
-      <h4>Student Attendance</h4>
-      <div id="summary-cards"></div>
-      <div id="records-list"></div>
-      <h4>Teacher Attendance</h4>
-      <div id="teacher-attendance-list"></div>
-      <h4>Lesson Notes</h4>
-      <div id="lesson-notes-list"></div>
-    </section>
+    <details class="records-section records-accordion-item">
+      <summary>Student Attendance</summary>
+      <div class="records-accordion-body">
+        <div id="summary-cards"></div>
+        <div id="records-list"></div>
+      </div>
+    </details>
 
-    <section class="records-section">
-      <h3>Volunteer Hour Records</h3>
-      <div id="volunteer-records-list"></div>
-    </section>
+    <details class="records-section records-accordion-item">
+      <summary>Teacher Attendance</summary>
+      <div class="records-accordion-body">
+        <div id="teacher-attendance-list"></div>
+      </div>
+    </details>
+
+    <details class="records-section records-accordion-item">
+      <summary>Lesson Notes</summary>
+      <div class="records-accordion-body">
+        <div id="lesson-notes-list"></div>
+      </div>
+    </details>
+
+    <details class="records-section records-accordion-item">
+      <summary>Volunteer Hour Records</summary>
+      <div class="records-accordion-body">
+        <div id="volunteer-records-list"></div>
+      </div>
+    </details>
   `
+
+  // Accordion behavior: only one section open at a time -- opening one
+  // closes whichever other section was already open, rather than letting
+  // several stack up open together. Native <details>/<summary> already
+  // gives us the expand/collapse mechanics (same element this file already
+  // uses for "Earlier records" -- see buildCollapsibleDateGroups); this
+  // just adds the "only one at a time" behavior on top via the 'toggle'
+  // event, which fires whenever a <details> element's open state changes.
+  const accordionItems = [...tabContent.querySelectorAll('.records-accordion-item')]
+  accordionItems.forEach(item => {
+    item.addEventListener('toggle', () => {
+      if (item.open) accordionItems.forEach(other => { if (other !== item) other.open = false })
+    })
+  })
 
   // Re-query and re-render every section together when the user picks a
   // new date range, so one filter covers all of them instead of separate
@@ -1725,11 +1763,14 @@ async function renderRecordsTab() {
     loadVolunteerHoursRecordsRange(startDate, endDate)
   })
 
-  // Initial load: just today's records for every section
-  loadRecordsRange(today, today)
-  loadTeacherAttendanceRange(today, today)
-  loadLessonNotesRange(today, today)
-  loadVolunteerHoursRecordsRange(today, today)
+  // Initial load: the last 7 days (matching the date pickers' default
+  // above) for every section. Sections start collapsed (no `open`
+  // attribute above), but the content loads into them regardless so it's
+  // ready the instant the admin expands one.
+  loadRecordsRange(weekAgo, today)
+  loadTeacherAttendanceRange(weekAgo, today)
+  loadLessonNotesRange(weekAgo, today)
+  loadVolunteerHoursRecordsRange(weekAgo, today)
 }
 
 /**

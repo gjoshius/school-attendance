@@ -1640,6 +1640,68 @@ h4 {
   margin-top: 0;
 }
 
+/* Records tab accordion: each section (Student Attendance, Teacher
+   Attendance, Lesson Notes, Volunteer Hour Records) is a <details>
+   element -- see renderRecordsTab -- collapsed by default so an admin
+   sees four short labels first and opens only what they need, rather
+   than every section's full content at once. A little JS in
+   renderRecordsTab keeps only one open at a time.
+   Padding moves from .records-section itself onto .records-accordion-body
+   so the collapsed <summary> row sits flush with the card's edges,
+   matching how a closed accordion header normally looks. */
+.records-accordion-item {
+  padding: 0;
+  overflow: hidden;
+}
+
+.records-accordion-item summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 1rem 1.25rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+.records-accordion-item summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Chevron drawn with a CSS border rather than an image/icon font, rotated
+   90deg when the section is open (details[open] is a real CSS selector
+   for this element's own open attribute). */
+.records-accordion-item summary::before {
+  content: '';
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-right: 0.6rem;
+  border-right: 2px solid #6b7280;
+  border-bottom: 2px solid #6b7280;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.records-accordion-item[open] summary {
+  color: #4f46e5;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.records-accordion-item[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.records-accordion-body {
+  padding: 1rem 1.25rem;
+}
+
+.records-accordion-body h4 {
+  margin-top: 1.25rem;
+}
+
+.records-accordion-body h4:first-of-type {
+  margin-top: 0;
+}
+
 .records-date-group {
   margin-bottom: 1.25rem;
 }
