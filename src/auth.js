@@ -37,36 +37,63 @@ import { passwordFieldHtml, wirePasswordToggles } from './password-toggle.js'
  * @param {HTMLElement} container - DOM element to render the form into.
  */
 export function renderLogin(container) {
-  // Render the sign-in form HTML
+  // Render the sign-in form HTML. The three sections below (sign in,
+  // reset-request, self-signup) are mutually exclusive -- exactly one is
+  // ever visible at a time (see showSection below) -- rather than
+  // stacking the reset/signup form underneath the still-visible sign-in
+  // form, which was confusing (two "password" fields with a stray "Back
+  // to sign in" link sitting between them).
   container.innerHTML = `
     <div class="login-form">
-      <h2>Sign In</h2>
-      <form id="login-form">
-        <input type="email" id="email" placeholder="Email" required />
-        ${passwordFieldHtml('password', 'Password')}
-        <button type="submit">Sign In</button>
-        <p id="login-error" class="error hidden"></p>
-      </form>
-      <p class="forgot-password-link"><a href="#" id="forgot-password-toggle">Forgot password?</a></p>
-      <form id="reset-form" class="hidden">
-        <input type="email" id="reset-email" placeholder="Email" required />
-        <button type="submit">Send Reset Link</button>
-        <p id="reset-message" class="success hidden"></p>
-        <p id="reset-error" class="error hidden"></p>
-      </form>
-      <p class="forgot-password-link"><a href="#" id="signup-toggle">New teacher? Set up your account</a></p>
-      <form id="signup-form" class="hidden">
-        <input type="email" id="signup-email" placeholder="Email" required />
-        ${passwordFieldHtml('signup-password', `New password (min ${PASSWORD_RULES.minLength} characters)`)}
-        ${passwordFieldHtml('signup-confirm-password', 'Confirm password')}
-        <button type="submit">Set Password</button>
-        <p id="signup-message" class="success hidden"></p>
-        <p id="signup-error" class="error hidden"></p>
-      </form>
+      <div id="signin-section">
+        <h2>Sign In</h2>
+        <form id="login-form">
+          <input type="email" id="email" placeholder="Email" required />
+          ${passwordFieldHtml('password', 'Password')}
+          <button type="submit">Sign In</button>
+          <p id="login-error" class="error hidden"></p>
+        </form>
+        <p class="forgot-password-link"><a href="#" id="forgot-password-toggle">Forgot password?</a></p>
+        <p class="forgot-password-link"><a href="#" id="signup-toggle">New teacher? Set up your account</a></p>
+      </div>
+
+      <div id="reset-section" class="hidden">
+        <h2>Reset Password</h2>
+        <form id="reset-form">
+          <input type="email" id="reset-email" placeholder="Email" required />
+          <button type="submit">Send Reset Link</button>
+          <p id="reset-message" class="success hidden"></p>
+          <p id="reset-error" class="error hidden"></p>
+        </form>
+        <p class="forgot-password-link"><a href="#" id="reset-back-link">Back to sign in</a></p>
+      </div>
+
+      <div id="signup-section" class="hidden">
+        <h2>Set Up Your Account</h2>
+        <form id="signup-form">
+          <input type="email" id="signup-email" placeholder="Email" required />
+          ${passwordFieldHtml('signup-password', `New password (min ${PASSWORD_RULES.minLength} characters)`)}
+          ${passwordFieldHtml('signup-confirm-password', 'Confirm password')}
+          <button type="submit">Set Password</button>
+          <p id="signup-message" class="success hidden"></p>
+          <p id="signup-error" class="error hidden"></p>
+        </form>
+        <p class="forgot-password-link"><a href="#" id="signup-back-link">Back to sign in</a></p>
+      </div>
     </div>
   `
 
   wirePasswordToggles(container)
+
+  // Shows exactly one of the three sections above, hiding the other two --
+  // the single source of truth for which "screen" of this form is
+  // currently visible.
+  const signinSection = document.getElementById('signin-section')
+  const resetSection = document.getElementById('reset-section')
+  const signupSection = document.getElementById('signup-section')
+  const showSection = (section) => {
+    ;[signinSection, resetSection, signupSection].forEach(s => s.classList.toggle('hidden', s !== section))
+  }
 
   // Handle sign-in form submission
   document.getElementById('login-form').addEventListener('submit', async (e) => {
@@ -88,36 +115,28 @@ export function renderLogin(container) {
     }
   })
 
-  // "Forgot password?" and "New teacher?" each toggle their own form
-  // open/closed, in place, without navigating anywhere -- matches the CSS
-  // comment on .forgot-password-link in style.css ("the reset-request
-  // form it toggles open"). Opening one closes the other, so at most one
-  // secondary form is ever open alongside the main sign-in form.
-  const forgotLink = document.getElementById('forgot-password-toggle')
+  // "Forgot password?", "New teacher?" and each section's own "Back to
+  // sign in" link just switch which section showSection displays --
+  // matches the CSS comment on .forgot-password-link in style.css ("the
+  // reset-request form it toggles open").
   const resetForm = document.getElementById('reset-form')
-  const signupLink = document.getElementById('signup-toggle')
   const signupForm = document.getElementById('signup-form')
 
-  forgotLink.addEventListener('click', (e) => {
+  document.getElementById('forgot-password-toggle').addEventListener('click', (e) => {
     e.preventDefault()
-    const opening = resetForm.classList.contains('hidden')
-    resetForm.classList.toggle('hidden', !opening)
-    forgotLink.textContent = opening ? 'Back to sign in' : 'Forgot password?'
-    if (opening) {
-      signupForm.classList.add('hidden')
-      signupLink.textContent = 'New teacher? Set up your account'
-    }
+    showSection(resetSection)
   })
-
-  signupLink.addEventListener('click', (e) => {
+  document.getElementById('signup-toggle').addEventListener('click', (e) => {
     e.preventDefault()
-    const opening = signupForm.classList.contains('hidden')
-    signupForm.classList.toggle('hidden', !opening)
-    signupLink.textContent = opening ? 'Back to sign in' : 'New teacher? Set up your account'
-    if (opening) {
-      resetForm.classList.add('hidden')
-      forgotLink.textContent = 'Forgot password?'
-    }
+    showSection(signupSection)
+  })
+  document.getElementById('reset-back-link').addEventListener('click', (e) => {
+    e.preventDefault()
+    showSection(signinSection)
+  })
+  document.getElementById('signup-back-link').addEventListener('click', (e) => {
+    e.preventDefault()
+    showSection(signinSection)
   })
 
   // Handle reset-request form submission
