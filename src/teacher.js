@@ -27,7 +27,7 @@
 import { supabase } from './supabase.js'
 import { toTitleCase, escapeHtml, OPTIONAL_CLASS_CODE_BY_NAME, GRADE_ORDER, VOLUNTEER_ELIGIBLE_GRADES } from './format.js'
 import { todayStr, getSessionForDate } from './calendar.js'
-import { NO_CLASS_MESSAGES, NO_CLASS_ASSIGNED_MESSAGE, TEACHER_MESSAGES, LOG_HOURS_MESSAGES, LESSON_NOTE_MAX_WORDS } from './config.js'
+import { NO_CLASS_MESSAGES, NO_CLASS_ASSIGNED_MESSAGE, TEACHER_MESSAGES, LOG_HOURS_MESSAGES, LESSON_NOTE_MAX_WORDS, SMILE_BOX_MESSAGES } from './config.js'
 import { logAudit } from './audit.js'
 import { renderNavDrawer } from './nav.js'
 
@@ -189,6 +189,9 @@ export async function renderTeacherDashboard(container, userId) {
     // shown) stays as-is.
     ...(volunteerTeams.length > 0 ? [{ key: 'logHours', label: 'Volunteer Hours' }] : []),
     ...(attendanceClasses.length > 0 ? [{ key: 'history', label: 'History' }] : []),
+    // Always shown, same as Calendar -- posting/reading Smile Box entries
+    // has nothing to do with which class (if any) a teacher is assigned to.
+    { key: 'smileBox', label: 'Smile Box' },
     { key: 'calendar', label: 'Calendar' }
   ]
 
@@ -253,6 +256,8 @@ export async function renderTeacherDashboard(container, userId) {
     } else if (activeTabName === 'history') {
       if (attendanceClasses.length === 0) return // see the 'attendance' branch above
       renderTeacherHistory(attendanceClasses[activeClassIndex])
+    } else if (activeTabName === 'smileBox') {
+      renderSmileBoxTab(userId)
     } else {
       renderTeacherCalendar(userId)
     }
@@ -1376,4 +1381,232 @@ function wireLogHoursForm(volunteerTeams, userId, sortedStudents) {
     // cleared, so there's nothing left to submit until they pick again.
     render()
   })
+}
+
+/**
+ * Renders the "Smile Box" tab: a form for posting a quick, upbeat note
+ * about a co-teacher or student -- "what made your day" -- plus the shared
+ * wall of every such note anyone has posted, newest first. Every teacher
+ * and admin sees the same wall (a "shared wall" design decision made when
+ * this feature was built, not a private inbox); see
+ * data_import/45_smile_box.sql for the RLS policies that make that so, and
+ * for why nothing posted here can be edited or deleted from the UI
+ * afterward.
+ *
+ * The search box lets a teacher tie a post to a specific person -- any
+ * student or any teacher/admin in the whole program, not just their own
+ * class or co-teachers (a deliberate choice: "co-teacher" could mean
+ * someone from a completely different class). Picking a name is entirely
+ * optional -- see wireSmileBoxForm's own doc comment for how a post
+ * without a match, or without any name at all, still works.
+ *
+ * @param {string} userId - Signed-in teacher/admin's id.
+ */
+async function renderSmileBoxTab(userId) {
+  const tabContent = document.getElementById('tab-content')
+  tabContent.innerHTML = '<p>Loading…</p>'
+
+  const [{ data: students, error: studentsError }, { data: people, error: peopleError }, { data: entries, error: entriesError }] = await Promise.all([
+    supabase.from('students').select('id, full_name').order('full_name'),
+    supabase.from('profiles').select('id, full_name').in('role', ['teacher', 'admin']).order('full_name'),
+    supabase.from('smile_box_entries').select('id, author_teacher_id, subject_name, message, date, created_at').order('created_at', { ascending: false })
+  ])
+
+  const firstError = studentsError || peopleError || entriesError
+  if (firstError) {
+    tabContent.innerHTML = `<p class="error">${SMILE_BOX_MESSAGES.loadError(firstError)}</p>`
+    return
+  }
+
+  // One flat, searchable roster -- every student plus every teacher/admin
+  // -- each tagged with its type so a pick can be saved into the right
+  // subject_student_id/subject_teacher_id column (see wireSmileBoxForm's
+  // submit handler).
+  const searchRoster = [
+    ...(students || []).map(s => ({ id: s.id, name: toTitleCase(s.full_name), type: 'student' })),
+    ...(people || []).map(p => ({ id: p.id, name: p.full_name, type: 'teacher' }))
+  ]
+
+  // Author display names for the wall, fetched as a separate query rather
+  // than a PostgREST embed -- smile_box_entries has two separate foreign
+  // keys into profiles (author_teacher_id and subject_teacher_id), so a
+  // plain follow-up query sidesteps needing an embed-disambiguation hint
+  // for something this simple.
+  const authorIds = [...new Set((entries || []).map(e => e.author_teacher_id))]
+  const { data: authors } = authorIds.length > 0
+    ? await supabase.from('profiles').select('id, full_name').in('id', authorIds)
+    : { data: [] }
+  const authorNameById = new Map((authors || []).map(a => [a.id, a.full_name]))
+
+  tabContent.innerHTML = `
+    <p class="smile-box-intro">${SMILE_BOX_MESSAGES.intro}</p>
+    <form id="smile-box-form">
+      <div class="smile-box-search-wrap">
+        <input type="text" id="smile-box-search" placeholder="${SMILE_BOX_MESSAGES.searchPlaceholder}" autocomplete="off" />
+        <div id="smile-box-search-results" class="smile-box-search-results hidden"></div>
+      </div>
+      <p id="smile-box-selected-name" class="smile-box-selected-name">${SMILE_BOX_MESSAGES.generalLabel}</p>
+      <textarea id="smile-box-message" placeholder="${SMILE_BOX_MESSAGES.messagePlaceholder}" required></textarea>
+      <button type="submit">${SMILE_BOX_MESSAGES.submitButton}</button>
+      <p id="smile-box-form-message" class="hidden"></p>
+    </form>
+
+    <h3>${SMILE_BOX_MESSAGES.wallHeading}</h3>
+    <div id="smile-box-wall">${buildSmileBoxWallHtml(entries || [], authorNameById)}</div>
+  `
+
+  wireSmileBoxForm(userId, searchRoster)
+}
+
+/**
+ * Wires the Smile Box post form: live name search against `roster`,
+ * picking a match, and posting. Picking a match is entirely optional --
+ * "should work even when name is not there" was an explicit requirement
+ * for this feature: a teacher can submit with no search text at all (a
+ * general post, not about anyone specific), or type a name that matches
+ * no one in the roster (a typo, or someone not in the system) and it's
+ * still saved as free text in subject_name, just without a linked
+ * subject_student_id/subject_teacher_id -- see the submit handler below.
+ *
+ * @param {string} userId
+ * @param {Array<{id: string, name: string, type: 'student'|'teacher'}>} roster
+ */
+function wireSmileBoxForm(userId, roster) {
+  const form = document.getElementById('smile-box-form')
+  const searchInput = document.getElementById('smile-box-search')
+  const resultsEl = document.getElementById('smile-box-search-results')
+  const selectedNameEl = document.getElementById('smile-box-selected-name')
+  const messageInput = document.getElementById('smile-box-message')
+  const formMessageEl = document.getElementById('smile-box-form-message')
+  const submitBtn = form.querySelector('button[type="submit"]')
+
+  // The currently picked subject, or null for "no specific person" -- the
+  // single source of truth the submit handler reads from. Typing in the
+  // search box (even just one more character) clears this back to null,
+  // so a stale pick can never silently survive a search that no longer
+  // matches it -- see the 'input' listener below.
+  let selected = null
+
+  const updateSelectedLabel = () => {
+    selectedNameEl.textContent = selected
+      ? SMILE_BOX_MESSAGES.selectedLabel(selected.name)
+      : SMILE_BOX_MESSAGES.generalLabel
+  }
+
+  searchInput.addEventListener('input', () => {
+    selected = null
+    updateSelectedLabel()
+
+    const term = searchInput.value.trim().toLowerCase()
+    if (term.length === 0) {
+      resultsEl.classList.add('hidden')
+      resultsEl.innerHTML = ''
+      return
+    }
+
+    const matches = roster.filter(p => p.name.toLowerCase().includes(term)).slice(0, 8)
+    resultsEl.innerHTML = matches.length > 0
+      ? matches.map(p => `
+          <button type="button" class="smile-box-result" data-id="${p.id}" data-type="${p.type}" data-name="${escapeHtml(p.name)}">
+            ${escapeHtml(p.name)}<span class="smile-box-result-type">${p.type === 'student' ? 'Student' : 'Teacher'}</span>
+          </button>
+        `).join('')
+      : `<p class="smile-box-no-match">${SMILE_BOX_MESSAGES.noMatches}</p>`
+    resultsEl.classList.remove('hidden')
+
+    resultsEl.querySelectorAll('.smile-box-result').forEach(btn => {
+      btn.addEventListener('click', () => {
+        selected = { id: btn.dataset.id, type: btn.dataset.type, name: btn.dataset.name }
+        searchInput.value = btn.dataset.name
+        updateSelectedLabel()
+        resultsEl.classList.add('hidden')
+        resultsEl.innerHTML = ''
+      })
+    })
+  })
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault()
+
+    const message = messageInput.value.trim()
+    formMessageEl.classList.add('hidden')
+
+    if (!message) {
+      formMessageEl.textContent = SMILE_BOX_MESSAGES.messageRequired
+      formMessageEl.className = 'error'
+      formMessageEl.classList.remove('hidden')
+      return
+    }
+
+    // Whatever's currently typed in the search box becomes subject_name
+    // verbatim, whether or not it matches a roster pick -- see this
+    // function's own doc comment. Empty/whitespace means "not about
+    // anyone specific", stored as null rather than an empty string.
+    const typedName = searchInput.value.trim()
+
+    submitBtn.disabled = true
+
+    const { error } = await supabase.from('smile_box_entries').insert({
+      author_teacher_id: userId,
+      subject_student_id: selected?.type === 'student' ? selected.id : null,
+      subject_teacher_id: selected?.type === 'teacher' ? selected.id : null,
+      subject_name: typedName || null,
+      message,
+      date: todayStr()
+    })
+
+    if (error) {
+      formMessageEl.textContent = SMILE_BOX_MESSAGES.submitError(error.message)
+      formMessageEl.className = 'error'
+      formMessageEl.classList.remove('hidden')
+      submitBtn.disabled = false
+      return
+    }
+
+    logAudit(
+      userId, 'teacher', 'smile_box.posted', 'smile_box_entries', null,
+      `Posted a Smile Box note${typedName ? ` about ${typedName}` : ''}`,
+      {
+        subject_name: typedName || null,
+        subject_student_id: selected?.type === 'student' ? selected.id : null,
+        subject_teacher_id: selected?.type === 'teacher' ? selected.id : null
+      }
+    )
+
+    window.showToast(SMILE_BOX_MESSAGES.posted)
+    // Full re-render rather than just prepending the new card -- simplest
+    // way to keep the wall, the author-name lookup, and the reset form all
+    // consistent with what's actually now in the database.
+    renderSmileBoxTab(userId)
+  })
+}
+
+/**
+ * Builds the "Recent Smiles" wall -- every Smile Box entry, newest first.
+ * Purely read-only: nothing rendered here is ever editable or deletable
+ * from the UI (see data_import/45_smile_box.sql).
+ *
+ * @param {Array} entries - smile_box_entries rows (id, author_teacher_id,
+ *   subject_name, message, date, created_at).
+ * @param {Map<string, string>} authorNameById
+ * @returns {string} HTML.
+ */
+function buildSmileBoxWallHtml(entries, authorNameById) {
+  if (entries.length === 0) return `<p class="smile-box-empty">${SMILE_BOX_MESSAGES.empty}</p>`
+
+  return entries.map(e => {
+    const authorName = authorNameById.get(e.author_teacher_id) || 'A teacher'
+    const subjectLine = e.subject_name ? SMILE_BOX_MESSAGES.aboutLabel(escapeHtml(e.subject_name)) : SMILE_BOX_MESSAGES.generalLabel
+    const safeMessage = escapeHtml(e.message).replace(/\n/g, '<br>')
+    return `
+      <div class="smile-box-card">
+        <div class="smile-box-card-top">
+          <span class="smile-box-subject">${subjectLine}</span>
+          <span class="smile-box-date">${e.date}</span>
+        </div>
+        <p class="smile-box-message">${safeMessage}</p>
+        <p class="smile-box-author">— ${escapeHtml(authorName)}</p>
+      </div>
+    `
+  }).join('')
 }

@@ -104,6 +104,7 @@ export const AUTH_MESSAGES = {
   accountCreatedCanSignIn: 'Account created! You can sign in with that password now -- ask your admin to finish setting up your class assignment if this is your first time in.',
   accountCreatedNeedsConfirmation: 'Account created! Check your inbox for a confirmation email -- click the link there, then you can sign in with that password.',
   pendingInvite: 'You already have a pending invite for this email -- check your inbox for a link to finish setting up your account (just sent again).',
+  alreadyRegistered: "You already have an account with this email -- use \"Forgot password?\" instead to sign back in.",
   resetLinkGeneric: 'If that email has an account, a reset link is on its way.'
 }
 
@@ -246,6 +247,19 @@ export const ADMIN_MESSAGES = {
   volunteerHoursRecords: {
     errorLoading: (err) => `Couldn't load volunteer hour records: ${err.message}`,
     noRecordsForRange: 'No accepted volunteer hours in this date range.'
+  },
+  // Records tab's "Smile Box" subsection (see admin.js's loadSmileBoxRange
+  // and data_import/45_smile_box.sql) -- a read-only, date-range-filtered
+  // mirror of the same shared wall every teacher already sees on their own
+  // Smile Box tab (see teacher.js's renderSmileBoxTab and SMILE_BOX_MESSAGES
+  // below).
+  smileBoxRecords: {
+    errorLoading: (err) => `Couldn't load Smile Box entries: ${err.message}`,
+    noRecordsForRange: 'No Smile Box entries in this date range.',
+    unknownTeacher: 'Unknown teacher',
+    byTeacher: (name) => `— ${name}`,
+    aboutSubject: (name) => `About ${name}`,
+    generalLabel: 'Not about anyone specific'
   },
   volunteerHours: {
     // See data_import/23_volunteer_hours.sql and teacher.js's
@@ -399,4 +413,34 @@ export const TEACHER_MESSAGES = {
     noteSaved: 'Note saved',
     couldntSaveNote: (message) => `Couldn't save note: ${message}`
   }
+}
+
+// Every message on the teacher dashboard's "Smile Box" tab -- see
+// teacher.js's renderSmileBoxTab/wireSmileBoxForm and
+// data_import/45_smile_box.sql. The admin Records tab's read-only mirror
+// of the same data uses smileBoxRecords (inside ADMIN_MESSAGES above)
+// instead, since its wording is admin-facing rather than a teacher
+// composing their own post.
+export const SMILE_BOX_MESSAGES = {
+  intro: 'Share something nice about a co-teacher or student -- what made your day today? Every teacher can see what gets posted here.',
+  searchPlaceholder: 'Search for a name (optional)…',
+  // Shown under the search box when nothing in the roster matches what's
+  // typed -- reassurance, not an error: see wireSmileBoxForm's doc comment
+  // ("should work even when name is not there" was an explicit
+  // requirement) -- whatever's typed is still saved as free text either way.
+  noMatches: "No match -- that's fine, the name you typed is still saved as-is.",
+  // Shown above the message box: either the picked person's name, or this,
+  // whenever no pick has been made (the default, and also what an empty
+  // search box means).
+  generalLabel: 'Not about anyone specific',
+  selectedLabel: (name) => `About: ${name}`,
+  messagePlaceholder: 'What made your day?',
+  submitButton: 'Post to Smile Box',
+  messageRequired: 'Write something before posting.',
+  submitError: (message) => `Error: ${message}`,
+  posted: 'Posted to the Smile Box!',
+  wallHeading: 'Recent Smiles',
+  empty: 'No Smile Box entries yet -- be the first to share something nice!',
+  loadError: (err) => `Couldn't load Smile Box: ${err.message}`,
+  aboutLabel: (name) => `About ${name}`
 }

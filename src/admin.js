@@ -34,7 +34,7 @@
 
 import { supabase } from './supabase.js'
 import {
-  toTitleCase, OPTIONAL_CLASS_CODE_BY_NAME,
+  toTitleCase, escapeHtml, OPTIONAL_CLASS_CODE_BY_NAME,
   GRADE_ORDER, GRADE_GROUPS, OTHER_GROUP_LABEL, GROUP_LABELS, gradeGroupLabel,
   VOLUNTEER_ELIGIBLE_GRADES
 } from './format.js'
@@ -1735,6 +1735,13 @@ async function renderRecordsTab() {
         <div id="volunteer-records-list"></div>
       </div>
     </details>
+
+    <details class="records-section records-accordion-item">
+      <summary>Smile Box</summary>
+      <div class="records-accordion-body">
+        <div id="smile-box-records-list"></div>
+      </div>
+    </details>
   `
 
   // Accordion behavior: only one section open at a time -- opening one
@@ -1761,6 +1768,7 @@ async function renderRecordsTab() {
     loadTeacherAttendanceRange(startDate, endDate)
     loadLessonNotesRange(startDate, endDate)
     loadVolunteerHoursRecordsRange(startDate, endDate)
+    loadSmileBoxRange(startDate, endDate)
   })
 
   // Initial load: the last 7 days (matching the date pickers' default
@@ -1771,6 +1779,7 @@ async function renderRecordsTab() {
   loadTeacherAttendanceRange(weekAgo, today)
   loadLessonNotesRange(weekAgo, today)
   loadVolunteerHoursRecordsRange(weekAgo, today)
+  loadSmileBoxRange(weekAgo, today)
 }
 
 /**
@@ -2259,6 +2268,80 @@ async function loadVolunteerHoursRecordsRange(startDate, endDate) {
       return `<div class="records-team-block"><strong>${teamName}</strong><div class="metric-list">${rows}</div></div>`
     }).join('')
     return [date, body]
+  })
+
+  list.innerHTML = buildCollapsibleDateGroups(
+    dateBodies,
+    (date, body) => `<div class="records-date-group"><h4>${date}</h4>${body}</div>`
+  )
+}
+
+/**
+ * "Smile Box" subsection of the Records tab (see renderRecordsTab and
+ * data_import/45_smile_box.sql) -- a read-only, date-range-filtered mirror
+ * of the exact same shared wall every teacher already sees on their own
+ * Smile Box tab (see teacher.js's renderSmileBoxTab/buildSmileBoxWallHtml).
+ * Author names are fetched as a separate follow-up query rather than a
+ * PostgREST embed, same reasoning as teacher.js's renderSmileBoxTab: this
+ * table has two separate foreign keys into profiles (author_teacher_id and
+ * subject_teacher_id), so a plain follow-up query sidesteps needing an
+ * embed-disambiguation hint.
+ *
+ * @param {string} startDate - 'YYYY-MM-DD', inclusive range start.
+ * @param {string} endDate - 'YYYY-MM-DD', inclusive range end.
+ */
+async function loadSmileBoxRange(startDate, endDate) {
+  const list = document.getElementById('smile-box-records-list')
+  if (!list) return // section may have been switched away from mid-fetch
+
+  const { data: entries, error } = await supabase
+    .from('smile_box_entries')
+    .select('id, author_teacher_id, subject_name, message, date')
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: false })
+
+  if (error) {
+    console.error('Error fetching Smile Box entries:', error)
+    list.innerHTML = `<p class="error">${ADMIN_MESSAGES.smileBoxRecords.errorLoading(error)}</p>`
+    return
+  }
+
+  if (!entries || entries.length === 0) {
+    list.innerHTML = `<p>${ADMIN_MESSAGES.smileBoxRecords.noRecordsForRange}</p>`
+    return
+  }
+
+  const authorIds = [...new Set(entries.map(e => e.author_teacher_id))]
+  const { data: authors } = authorIds.length > 0
+    ? await supabase.from('profiles').select('id, full_name').in('id', authorIds)
+    : { data: [] }
+  const authorNameById = new Map((authors || []).map(a => [a.id, a.full_name]))
+
+  const dateGrouped = {}
+  entries.forEach(e => {
+    if (!dateGrouped[e.date]) dateGrouped[e.date] = []
+    dateGrouped[e.date].push(e)
+  })
+
+  const dateBodies = Object.entries(dateGrouped).map(([date, dayEntries]) => {
+    const rows = dayEntries.map(e => {
+      const authorName = authorNameById.get(e.author_teacher_id) || ADMIN_MESSAGES.smileBoxRecords.unknownTeacher
+      const subjectLine = e.subject_name
+        ? ADMIN_MESSAGES.smileBoxRecords.aboutSubject(escapeHtml(e.subject_name))
+        : ADMIN_MESSAGES.smileBoxRecords.generalLabel
+      const safeMessage = escapeHtml(e.message).replace(/\n/g, '<br>')
+      return `
+        <div class="smile-box-card">
+          <div class="smile-box-card-top">
+            <span class="smile-box-subject">${subjectLine}</span>
+          </div>
+          <p class="smile-box-message">${safeMessage}</p>
+          <p class="smile-box-author">${ADMIN_MESSAGES.smileBoxRecords.byTeacher(escapeHtml(toTitleCase(authorName)))}</p>
+        </div>
+      `
+    }).join('')
+    return [date, rows]
   })
 
   list.innerHTML = buildCollapsibleDateGroups(
