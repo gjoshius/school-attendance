@@ -169,10 +169,17 @@ export async function renderTeacherDashboard(container, userId) {
   // attendance classes in it; a volunteer team is switched via Log
   // Hours's own team picker instead (see renderLogHoursTab), never here.
   const classSwitcherHtml = attendanceClasses.length > 1
-    ? `<div class="class-switcher">${attendanceClasses
+    ? `<div class="class-switcher" id="class-switcher">${attendanceClasses
         .map((c, i) => `<button class="class-switch-btn${i === 0 ? ' active' : ''}" data-index="${i}">${c.name}</button>`)
         .join('')}</div>`
     : ''
+
+  // Which tabs the class switcher actually applies to -- Take Attendance
+  // and History are the only two that read activeClassIndex (see
+  // renderActiveTab below); Log Hours, Smile Box and Calendar are each
+  // either class-independent or switched some other way (see
+  // classSwitcherHtml's own doc comment above).
+  const CLASS_SWITCHER_TABS = ['attendance', 'history']
 
   // Take Attendance and History only make sense when this teacher has at
   // least one real attendance class -- omitted entirely (not just
@@ -210,6 +217,12 @@ export async function renderTeacherDashboard(container, userId) {
   // time since it's specific to (class, date) and each class tracks it
   // independently.
   async function renderActiveTab() {
+    // Only visible on the two tabs that actually use it -- see
+    // CLASS_SWITCHER_TABS above. A no-op when there's just one attendance
+    // class (classSwitcherHtml rendered nothing, so this element doesn't
+    // exist at all).
+    document.getElementById('class-switcher')?.classList.toggle('hidden', !CLASS_SWITCHER_TABS.includes(activeTabName))
+
     if (activeTabName === 'attendance') {
       // Guarded even though the tab button itself is never rendered
       // without an attendance class -- defensive, not reachable in

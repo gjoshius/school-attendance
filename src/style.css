@@ -228,6 +228,16 @@ button {
   margin-bottom: 0.75rem;
 }
 
+/* .class-switcher and the generic .hidden utility (above) are both
+   single-class selectors, so without this override, whichever rule comes
+   LATER in this file wins the tie regardless of which classes are actually
+   on the element -- silently defeating `classList.toggle('hidden', ...)`
+   on this element (JS correctly adds "hidden", CSS ignores it). This
+   compound selector has higher specificity, so it always wins. */
+.class-switcher.hidden {
+  display: none;
+}
+
 .class-switch-btn {
   background: white;
   color: #4f46e5;
