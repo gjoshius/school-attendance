@@ -172,7 +172,7 @@ export const ADMIN_MESSAGES = {
     couldntAddDate: (err) => `Couldn't add date: ${err.message}`
   },
   classes: {
-    hint: 'Drag a teacher onto a class to give them their first assignment -- once assigned, they drop off this list. To also give a class to someone who\'s already teaching elsewhere, use that class\'s "+ Add teacher" dropdown instead. "(pending)" means they haven\'t signed up for an account yet -- the assignment takes effect automatically once they do.',
+    hint: 'Drag a teacher onto a class to give them their first assignment -- once assigned, they drop off this list. To also give a class to someone who\'s already teaching elsewhere, use that class\'s "+ Add teacher" dropdown instead. "(pending)" means they haven\'t signed up for an account yet -- the assignment takes effect automatically once they do. Someone new who hasn\'t been assigned anywhere yet shows up twice, once as Teacher and once as Assistant -- drag whichever role fits (Assistant is the restricted role for minors and new volunteers: attendance for their own class plus Smile Box, no volunteer hours); the other copy disappears once you do, and every later class for that person keeps the same role.',
     noClassesInGroupYet: 'No classes in this group yet',
     unassignedBadge: 'Unassigned',
     noTeachersFoundHint: 'No teachers found -- check that data_import/08_teacher_profile_fields.sql and 08b_teacher_registrations_data.sql have been run',

@@ -1008,6 +1008,33 @@ let classesTabGroupFilter = null
  *   assignTeacherRefToClass/unassignTeacherRefFromClass so every
  *   assignment change is attributed in the audit trail (see audit.js).
  */
+
+/**
+ * Parses a teacher/assistant reference string used throughout this tab's
+ * assignment UI (drag-and-drop chips, the "+ Add teacher" dropdown, and the
+ * remove-teacher buttons) into its parts.
+ *
+ *  - "active:<profiles.id>" -- an already-signed-up account. Role doesn't
+ *    matter here: class_teachers grants dashboard access regardless of
+ *    profiles.role (see the RLS policies throughout data_import/*.sql --
+ *    they all key off class_teachers membership, not role).
+ *  - "pending:<role>:<email>" -- not yet signed up. `role` is 'teacher' or
+ *    'assistant', written into pending_class_assignments.role so the
+ *    signup trigger (data_import/50_assistant_role.sql) creates their
+ *    profile with the right one.
+ *
+ * @param {string} ref
+ * @returns {{type: 'active', id: string} | {type: 'pending', role: string, email: string}}
+ */
+function parseTeacherRef(ref) {
+  if (ref.startsWith('active:')) {
+    return { type: 'active', id: ref.slice('active:'.length) }
+  }
+  const rest = ref.slice('pending:'.length)
+  const sep = rest.indexOf(':')
+  return { type: 'pending', role: rest.slice(0, sep), email: rest.slice(sep + 1) }
+}
+
 async function renderClassesTab(userId) {
   const tabContent = document.getElementById('tab-content')
 
@@ -1055,7 +1082,7 @@ async function renderClassesTab(userId) {
   // meantime so the admin can see/undo them.
   const { data: pendingAssignments, error: pendingAssignmentsError } = await supabase
     .from('pending_class_assignments')
-    .select('class_id, email, teacher_registrations(full_name)')
+    .select('class_id, email, role, teacher_registrations(full_name)')
 
   // Surface any fetch failure instead of silently rendering an empty/
   // misleading tab -- e.g. "relation does not exist" if a data_import
@@ -1090,26 +1117,60 @@ async function renderClassesTab(userId) {
   const activeEmails = new Set(
     (activeTeachers || []).map(t => (t.email || '').toLowerCase()).filter(Boolean)
   )
+  // A not-yet-signed-up person's role is decided the first time an admin
+  // assigns them to any class (teacher or assistant), and then stays fixed
+  // for every class after that -- pendingRoleByEmail below is what makes
+  // that stick, so the same person doesn't get offered both role choices
+  // again on a later class once one is already pending. If someone somehow
+  // ended up with more than one pending row in different roles (shouldn't
+  // normally happen), 'teacher' wins, same tie-break as the signup trigger
+  // in data_import/50_assistant_role.sql.
+  const pendingRoleByEmail = new Map()
+  ;(pendingAssignments || []).forEach(p => {
+    const email = (p.email || '').toLowerCase()
+    const existing = pendingRoleByEmail.get(email)
+    if (!existing || existing === 'assistant') pendingRoleByEmail.set(email, p.role)
+  })
+
   const teacherRoster = [
     ...(activeTeachers || []).map(t => ({ ref: `active:${t.id}`, name: t.full_name, pending: false })),
     ...(registrations || [])
       .filter(r => !activeEmails.has((r.email || '').toLowerCase()))
-      .map(r => ({ ref: `pending:${r.email}`, name: r.full_name, pending: true }))
+      .flatMap(r => {
+        const decidedRole = pendingRoleByEmail.get((r.email || '').toLowerCase())
+        // No pending assignment yet -- offer both role choices as separate
+        // roster entries (two chips/options) so the admin decides at the
+        // moment they make this person's first assignment. Whichever one
+        // they use, pendingRoleByEmail locks it in on every render after.
+        const roles = decidedRole ? [decidedRole] : ['teacher', 'assistant']
+        return roles.map(role => ({
+          ref: `pending:${role}:${r.email}`,
+          name: r.full_name,
+          pending: true,
+          role
+        }))
+      })
   ]
 
   // Every ref already assigned to *any* class, active or pending (email
   // lowercased for matching, since teacher_registrations.email casing can
-  // vary). The draggable pool below only shows teachers NOT in this set --
-  // once someone has a class, they drop out of the pool, since drag-and-
-  // drop is meant for a teacher's first/only assignment. Giving a teacher
-  // who already has a class an additional one is done through that
-  // second class's own "+ Add teacher" dropdown instead (built per-class
-  // below, which is not restricted this way).
+  // vary; role is deliberately not part of this key -- once a pending
+  // person has a class in either role, both of their role-choice roster
+  // entries should drop out of the first-assignment pool). The draggable
+  // pool below only shows teachers NOT in this set -- once someone has a
+  // class, they drop out of the pool, since drag-and-drop is meant for a
+  // teacher's first/only assignment. Giving a teacher who already has a
+  // class an additional one is done through that second class's own
+  // "+ Add teacher" dropdown instead (built per-class below, which is not
+  // restricted this way).
   const assignedRefsAnywhere = new Set([
     ...(classes || []).flatMap(c => (c.class_teachers || []).map(ct => `active:${ct.teacher_id}`)),
     ...(pendingAssignments || []).map(p => `pending:${p.email.toLowerCase()}`)
   ])
-  const normalizeRef = ref => ref.startsWith('pending:') ? `pending:${ref.slice('pending:'.length).toLowerCase()}` : ref
+  const normalizeRef = ref => {
+    const parsed = parseTeacherRef(ref)
+    return parsed.type === 'pending' ? `pending:${parsed.email.toLowerCase()}` : ref
+  }
   const poolRoster = teacherRoster.filter(t => !assignedRefsAnywhere.has(normalizeRef(t.ref)))
 
   // Sort classes into grade order (Kindergarten, 1st Grade, 2nd Grade, ...)
@@ -1172,17 +1233,21 @@ async function renderClassesTab(userId) {
     const pendingTags = classPending
       .map(p => {
         const name = p.teacher_registrations?.full_name || p.email
-        return `<span class="teacher-tag teacher-tag-pending">${name} (pending)<button type="button" class="remove-teacher-btn" data-class-id="${c.id}" data-class-name="${c.name}" data-teacher-ref="pending:${p.email}" data-teacher-name="${name}" title="Remove ${name}">×</button></span>`
+        const roleLabel = p.role === 'assistant' ? ' (assistant, pending)' : ' (pending)'
+        return `<span class="teacher-tag teacher-tag-pending">${name}${roleLabel}<button type="button" class="remove-teacher-btn" data-class-id="${c.id}" data-class-name="${c.name}" data-teacher-ref="pending:${p.role}:${p.email}" data-teacher-name="${name}" title="Remove ${name}">×</button></span>`
       })
       .join('')
 
     const teacherTags = (activeTags + pendingTags) || `<span class="no-teachers">${ADMIN_MESSAGES.classes.unassignedBadge}</span>`
 
     const availableOptions = teacherRoster
-      .filter(t => t.pending
-        ? !assignedPendingEmails.has(t.ref.slice('pending:'.length).toLowerCase())
-        : !assignedActiveIds.has(t.ref.slice('active:'.length)))
-      .map(t => `<option value="${t.ref}">${t.name}${t.pending ? ' (pending)' : ''}</option>`)
+      .filter(t => {
+        const parsed = parseTeacherRef(t.ref)
+        return parsed.type === 'pending'
+          ? !assignedPendingEmails.has(parsed.email.toLowerCase())
+          : !assignedActiveIds.has(parsed.id)
+      })
+      .map(t => `<option value="${t.ref}">${t.name}${t.pending ? (t.role === 'assistant' ? ' (assistant, pending)' : ' (pending)') : ''}</option>`)
       .join('')
 
     return `
@@ -1232,7 +1297,7 @@ async function renderClassesTab(userId) {
   // assignedRefsAnywhere above for why this is poolRoster, not the full
   // teacherRoster.
   const teacherPoolHtml = poolRoster
-    .map(t => `<span class="teacher-chip${t.pending ? ' teacher-chip-pending' : ''}" draggable="true" data-teacher-ref="${t.ref}">${t.name}${t.pending ? ' <em>(pending)</em>' : ''}</span>`)
+    .map(t => `<span class="teacher-chip${t.pending ? ' teacher-chip-pending' : ''}" draggable="true" data-teacher-ref="${t.ref}">${t.name}${t.pending ? (t.role === 'assistant' ? ' <em>(assistant, pending)</em>' : ' <em>(pending)</em>') : ''}</span>`)
     .join('') || (teacherRoster.length === 0
       ? `<span class="no-teachers">${ADMIN_MESSAGES.classes.noTeachersFoundHint}</span>`
       : `<span class="no-teachers">${ADMIN_MESSAGES.classes.everyTeacherAssigned}</span>`)
@@ -1272,8 +1337,9 @@ async function renderClassesTab(userId) {
     renderClassesTab(userId)
   })
 
-  // Dragging a teacher chip carries a "active:<id>" or "pending:<email>"
-  // reference via the standard HTML5 Drag and Drop API
+  // Dragging a teacher chip carries a "active:<id>" or
+  // "pending:<role>:<email>" reference via the standard HTML5 Drag and Drop
+  // API -- see parseTeacherRef above.
   tabContent.querySelectorAll('.teacher-chip').forEach(chip => {
     chip.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData('text/plain', chip.dataset.teacherRef)
@@ -1349,34 +1415,33 @@ async function renderClassesTab(userId) {
 }
 
 /**
- * Assigns a teacher to a class, then re-renders the Classes tab. `ref` is
- * either "active:<profiles.id>" (writes to class_teachers directly -- see
- * data_import/06_multi_teacher_classes.sql) or "pending:<email>" (writes
- * to pending_class_assignments instead, since a not-yet-signed-up teacher
- * has no profiles.id yet -- see
- * data_import/10_pending_class_assignments.sql). Used by both the
- * drag-and-drop drop handler and the "+ Add teacher" select fallback.
+ * Assigns a teacher (or assistant) to a class, then re-renders the Classes
+ * tab. `ref` is either "active:<profiles.id>" (writes to class_teachers
+ * directly -- see data_import/06_multi_teacher_classes.sql) or
+ * "pending:<role>:<email>" (writes to pending_class_assignments instead,
+ * since a not-yet-signed-up person has no profiles.id yet -- see
+ * data_import/10_pending_class_assignments.sql and, for the role column,
+ * data_import/50_assistant_role.sql). Used by both the drag-and-drop drop
+ * handler and the "+ Add teacher" select fallback. See parseTeacherRef.
  *
  * @param {string} classId
- * @param {string} ref - "active:<id>" or "pending:<email>"
+ * @param {string} ref - "active:<id>" or "pending:<role>:<email>"
  * @param {string} userId - Signed-in admin's id, recorded as the actor.
  * @param {string} className - Display name, for the audit summary only.
  * @param {string} teacherName - Display name, for the audit summary only.
  */
 async function assignTeacherRefToClass(classId, ref, userId, className, teacherName) {
-  const sep = ref.indexOf(':')
-  const type = ref.slice(0, sep)
-  const value = ref.slice(sep + 1)
+  const parsed = parseTeacherRef(ref)
 
-  const { error } = type === 'pending'
-    ? await supabase.from('pending_class_assignments').insert({ class_id: classId, email: value })
-    : await supabase.from('class_teachers').insert({ class_id: classId, teacher_id: value })
+  const { error } = parsed.type === 'pending'
+    ? await supabase.from('pending_class_assignments').insert({ class_id: classId, email: parsed.email, role: parsed.role })
+    : await supabase.from('class_teachers').insert({ class_id: classId, teacher_id: parsed.id })
 
   if (!error) {
-    showToast(type === 'pending' ? ADMIN_MESSAGES.classes.teacherAssignedPending : ADMIN_MESSAGES.classes.teacherAssigned)
+    showToast(parsed.type === 'pending' ? ADMIN_MESSAGES.classes.teacherAssignedPending : ADMIN_MESSAGES.classes.teacherAssigned)
     logAudit(
       userId, 'admin', 'class_teacher.assigned', 'class_teacher', classId,
-      `Assigned ${teacherName} to ${className}${type === 'pending' ? ' (pending signup)' : ''}`,
+      `Assigned ${teacherName} to ${className}${parsed.type === 'pending' ? ` (pending signup, as ${parsed.role})` : ''}`,
       { class_id: classId, class_name: className, teacher_ref: ref, teacher_name: teacherName }
     )
   } else if (error.code === '23505') {
@@ -1389,23 +1454,21 @@ async function assignTeacherRefToClass(classId, ref, userId, className, teacherN
 }
 
 /**
- * Removes a teacher (active or pending -- see assignTeacherRefToClass)
- * from a class, then re-renders the Classes tab.
+ * Removes a teacher/assistant (active or pending -- see
+ * assignTeacherRefToClass) from a class, then re-renders the Classes tab.
  *
  * @param {string} classId
- * @param {string} ref - "active:<id>" or "pending:<email>"
+ * @param {string} ref - "active:<id>" or "pending:<role>:<email>"
  * @param {string} userId - Signed-in admin's id, recorded as the actor.
  * @param {string} className - Display name, for the audit summary only.
  * @param {string} teacherName - Display name, for the audit summary only.
  */
 async function unassignTeacherRefFromClass(classId, ref, userId, className, teacherName) {
-  const sep = ref.indexOf(':')
-  const type = ref.slice(0, sep)
-  const value = ref.slice(sep + 1)
+  const parsed = parseTeacherRef(ref)
 
-  const { error } = type === 'pending'
-    ? await supabase.from('pending_class_assignments').delete().eq('class_id', classId).eq('email', value)
-    : await supabase.from('class_teachers').delete().eq('class_id', classId).eq('teacher_id', value)
+  const { error } = parsed.type === 'pending'
+    ? await supabase.from('pending_class_assignments').delete().eq('class_id', classId).eq('email', parsed.email)
+    : await supabase.from('class_teachers').delete().eq('class_id', classId).eq('teacher_id', parsed.id)
 
   showToast(error ? ADMIN_MESSAGES.classes.couldntRemoveTeacher(error) : ADMIN_MESSAGES.classes.teacherRemoved)
   if (!error) {

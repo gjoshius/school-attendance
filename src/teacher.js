@@ -81,10 +81,21 @@ function buildWelcomeBanner(fullName) {
  * from ever landing on the wrong workflow for what they're actually here
  * to do.
  *
+ * A signed-in 'assistant' (see data_import/50_assistant_role.sql -- a
+ * restricted role for a minor or a new volunteer) gets this exact same
+ * dashboard, just with a trimmed tab set: no Log Hours, since that needs
+ * to see every 6th-12th grade student across the whole program to log
+ * hours for, not just their own class (see VOLUNTEER_ELIGIBLE_GRADES
+ * above). Take Attendance, History, Smile Box and Calendar all stay,
+ * since those are already scoped to (or independent of) their own class
+ * at the database level -- this tab trim is a UI nicety on top of that
+ * real protection, not the protection itself.
+ *
  * @param {HTMLElement} container - DOM element to render the dashboard into.
  * @param {string} userId - Supabase auth user id of the signed-in teacher.
+ * @param {string} [role] - 'teacher' (default) or 'assistant'.
  */
-export async function renderTeacherDashboard(container, userId) {
+export async function renderTeacherDashboard(container, userId, role = 'teacher') {
   // Look up the signed-in teacher's name for the welcome banner
   const { data: profile } = await supabase
     .from('profiles')
@@ -160,9 +171,14 @@ export async function renderTeacherDashboard(container, userId) {
   // Defaults to Take Attendance when this teacher actually has an
   // attendance class; a volunteer-team-only teacher (no grade/optional
   // class at all) has no Take Attendance tab to default to (see
-  // attendanceTabsHtml below), so they land on Log Hours instead.
+  // attendanceTabsHtml below), so they land on Log Hours instead -- unless
+  // they're an assistant, who never gets a Log Hours tab at all (see this
+  // function's doc comment above), so they'd land on Smile Box instead in
+  // that same no-attendance-class edge case.
   let activeClassIndex = 0
-  let activeTabName = attendanceClasses.length > 0 ? 'attendance' : 'logHours'
+  let activeTabName = attendanceClasses.length > 0
+    ? 'attendance'
+    : (role === 'assistant' ? 'smileBox' : 'logHours')
 
   // Only show the class switcher when it's actually needed -- most
   // teachers have exactly one attendance class -- and only ever list
@@ -193,8 +209,9 @@ export async function renderTeacherDashboard(container, userId) {
     // Labeled "Volunteer Hours" (not "Log Hours") to match the admin
     // dashboard's tab for the same feature -- same name on both screens,
     // even though the internal 'logHours' key (used only in code, never
-    // shown) stays as-is.
-    ...(volunteerTeams.length > 0 ? [{ key: 'logHours', label: 'Volunteer Hours' }] : []),
+    // shown) stays as-is. Never shown to an assistant -- see this
+    // function's doc comment above for why.
+    ...(volunteerTeams.length > 0 && role !== 'assistant' ? [{ key: 'logHours', label: 'Volunteer Hours' }] : []),
     ...(attendanceClasses.length > 0 ? [{ key: 'history', label: 'History' }] : []),
     // Always shown, same as Calendar -- posting/reading Smile Box entries
     // has nothing to do with which class (if any) a teacher is assigned to.

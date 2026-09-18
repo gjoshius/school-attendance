@@ -144,7 +144,10 @@ function renderDualRoleShell(container, userId) {
     cleanupAttendanceChannel()
     teacherBtn.classList.add('active')
     adminBtn.classList.remove('active')
-    renderTeacherDashboard(contentEl, userId)
+    // Always the full teacher view here, never the restricted assistant
+    // one -- this switcher is for an admin who also happens to teach a
+    // class (profiles.role = 'admin'), not for the assistant role at all.
+    renderTeacherDashboard(contentEl, userId, 'teacher')
   }
 
   adminBtn.addEventListener('click', showAdmin)
@@ -180,8 +183,11 @@ async function handleAuthState(session) {
     } else {
       renderAdminDashboard(mainContent, session.user.id)
     }
-  } else if (role === 'teacher') {
-    renderTeacherDashboard(mainContent, session.user.id)
+  } else if (role === 'teacher' || role === 'assistant') {
+    // Same dashboard renders both -- renderTeacherDashboard itself trims
+    // the tab set (no Log Hours, no program-wide attendance access) when
+    // role is 'assistant'. See src/teacher.js's own doc comment on that.
+    renderTeacherDashboard(mainContent, session.user.id, role)
   } else {
     // Signed in, but no matching `profiles` row (or one with no
     // recognized role) yet -- happens right after accepting an invite,
