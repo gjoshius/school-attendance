@@ -1063,7 +1063,7 @@ async function renderClassesTab(userId) {
   // account yet.
   const { data: registrations, error: registrationsError } = await supabase
     .from('teacher_registrations')
-    .select('email, full_name')
+    .select('email, full_name, role')
 
   // Fetch existing classes with their assigned (active) teachers -- a
   // class can have more than one, via the class_teachers join table (see
@@ -1137,11 +1137,17 @@ async function renderClassesTab(userId) {
     ...(registrations || [])
       .filter(r => !activeEmails.has((r.email || '').toLowerCase()))
       .flatMap(r => {
-        const decidedRole = pendingRoleByEmail.get((r.email || '').toLowerCase())
-        // No pending assignment yet -- offer both role choices as separate
-        // roster entries (two chips/options) so the admin decides at the
-        // moment they make this person's first assignment. Whichever one
-        // they use, pendingRoleByEmail locks it in on every render after.
+        // An actual assignment (pendingRoleByEmail) is a real decision and
+        // always wins if one exists. Short of that, teacher_registrations
+        // .role (data_import/54_teacher_registrations_default_role.sql)
+        // lets an admin pre-decide the role at registration time -- e.g.
+        // registering a batch of 12th graders specifically as Assistants
+        // -- instead of only being able to decide it at first assignment.
+        // Only when NEITHER exists do we fall back to offering both role
+        // choices as separate roster entries (two chips/options), so the
+        // admin decides at the moment they make this person's first
+        // assignment.
+        const decidedRole = pendingRoleByEmail.get((r.email || '').toLowerCase()) || r.role
         const roles = decidedRole ? [decidedRole] : ['teacher', 'assistant']
         return roles.map(role => ({
           ref: `pending:${role}:${r.email}`,

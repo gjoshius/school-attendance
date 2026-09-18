@@ -343,12 +343,17 @@ export const LOG_HOURS_MESSAGES = {
   // been picked yet -- see renderLogHoursTab/wireLogHoursForm.
   selectedHeading: (count) => `Selected (${count})`,
   noSelectedStudents: 'Nobody selected yet -- tap a name above to add them here.',
-  submitButton: (count) => count > 0 ? `Log Hours for ${count} Student${count === 1 ? '' : 's'}` : 'Log Hours',
+  // "Volunteer Hours" everywhere the app names this feature to a user --
+  // the tab label (see teacher.js's teacherTabs), this button, and the
+  // toast below all agree. "Log"/"logging" still shows up as a plain verb
+  // ("logging hours", "Logged for N students") since that just describes
+  // the action, not a second competing name for the feature.
+  submitButton: (count) => count > 0 ? `Log Volunteer Hours for ${count} Student${count === 1 ? '' : 's'}` : 'Log Volunteer Hours',
   noStudentsSelected: 'Select at least one student.',
   invalidHours: 'Enter hours greater than 0.',
   noteRequired: 'Add a note before logging hours.',
   submitError: (message) => `Error: ${message}`,
-  submitted: (count) => `Logged for ${count} student${count === 1 ? '' : 's'} -- waiting on admin review.`,
+  submitted: (count) => `Volunteer hours logged for ${count} student${count === 1 ? '' : 's'} -- waiting on admin review.`,
   // Attendance-percentage badge shown under each student's name in the
   // picker -- see teacher.js's fetchAttendancePercentages/rowHtml. Gives a
   // teacher enough to decide whether to offer this student a
