@@ -210,27 +210,36 @@ function renderDualRoleShell(container, userId) {
 /**
  * Called by set-password.js right after it successfully saves a new
  * password (supabase.auth.updateUser succeeded). Clears both the in-memory
- * and sessionStorage recovery flags and routes straight into the app from
- * the current session, WITHOUT waiting for Supabase's USER_UPDATED auth
- * event to do it via the onAuthStateChange listener below.
+ * and sessionStorage recovery flags, WITHOUT waiting for Supabase's
+ * USER_UPDATED auth event to do it via the onAuthStateChange listener
+ * below -- that event turned out not to be a safe thing to depend on
+ * alone (same class of unreliability as PASSWORD_RECOVERY; see
+ * isPasswordRecoveryLink's doc comment above), and skipping it left mobile
+ * users stuck on the "Set Your Password" form forever after a successful
+ * save, with no error shown and nothing to do next.
  *
- * That event turned out not to be a safe thing to depend on alone -- same
- * class of unreliability as PASSWORD_RECOVERY (see isPasswordRecoveryLink's
- * doc comment above) -- and skipping it left mobile users stuck on the
- * "Set Your Password" form forever after a successful save, with no error
- * shown and nothing to do next. The onAuthStateChange listener still
- * clears the flags and calls handleAuthState on USER_UPDATED too, if/when
- * it does fire; that's now just a harmless, redundant second call to
- * handleAuthState (see handleAuthState's own note: safe to call more than
- * once for the same session).
+ * Deliberately signs the user back OUT of the temporary recovery session
+ * afterwards rather than routing straight into their dashboard: the
+ * recovery session is just a means to let updateUser run, not something
+ * that should quietly become their normal signed-in session, and having
+ * them land back on the ordinary login screen and sign in fresh confirms
+ * the new password actually works end to end (and matches what most
+ * "reset your password" flows do elsewhere). The onAuthStateChange
+ * listener still clears the flags and calls handleAuthState on
+ * USER_UPDATED too, if/when it does fire -- that's now just a harmless,
+ * redundant call (see handleAuthState's own note: safe to call more than
+ * once for the same session), and the SIGNED_OUT event this triggers next
+ * lands on the same handleAuthState(null) branch this function calls
+ * directly.
  *
  * @returns {Promise<void>}
  */
 async function handlePasswordSaved() {
   isPasswordRecoveryLink = false
   sessionStorage.removeItem(RECOVERY_FLAG_KEY)
-  const { data: { session } } = await supabase.auth.getSession()
-  await handleAuthState(session)
+  await supabase.auth.signOut({ scope: 'local' })
+  window.showToast('Password set! Please sign in with your new password.')
+  await handleAuthState(null)
 }
 
 /**
