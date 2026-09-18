@@ -234,6 +234,15 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
   // time since it's specific to (class, date) and each class tracks it
   // independently.
   async function renderActiveTab() {
+    // Always tear down any presence broadcast from whatever was rendered
+    // before this call -- switching tabs, switching classes, or landing
+    // back on 'attendance' for a *different* class should all stop
+    // whatever was being broadcast previously. Re-established below, only
+    // when actually on the attendance tab with the form showing (see
+    // trackTeacherPresence's own doc comment for why the scope is this
+    // narrow).
+    cleanupTeacherPresenceChannel()
+
     // Only visible on the two tabs that actually use it -- see
     // CLASS_SWITCHER_TABS above. A no-op when there's just one attendance
     // class (classSwitcherHtml rendered nothing, so this element doesn't
@@ -281,6 +290,7 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
         teacherRecords: existingTeacherRecords || [],
         existingNote: existingNote || null
       })
+      trackTeacherPresence(userId, myClass.id)
     } else if (activeTabName === 'logHours') {
       renderLogHoursTab(volunteerTeams, userId)
     } else if (activeTabName === 'history') {
@@ -314,6 +324,55 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
   // Show the default tab (see activeTabName above) for the first
   // attendance class by default
   renderActiveTab()
+}
+
+/**
+ * Broadcasts, via Supabase Realtime Presence, that this teacher currently
+ * has the attendance form open for `classId` right now. Read by the admin
+ * dashboard's Today tab (see admin.js's renderTodayTab) to show a live dot
+ * on a class card while its teacher is actually looking at it.
+ *
+ * Deliberately scoped to "right now, this one class" rather than "online
+ * for this whole session": the only caller is renderActiveTab's
+ * 'attendance' branch, called fresh right after the form itself renders,
+ * and always preceded by cleanupTeacherPresenceChannel (see the top of
+ * renderActiveTab) -- so switching to any other tab, switching class, or
+ * navigating away from the teacher dashboard entirely (see main.js's
+ * cleanupRealtimeChannels, called from renderDualRoleShell and sign-out)
+ * all stop the broadcast immediately rather than leaving it running idle
+ * in the background. Keeps the extra Realtime connection this adds no
+ * broader than "a teacher is on their attendance screen right now" --
+ * relevant given this app's Supabase project is on the free tier and
+ * connection count has already come up this session.
+ *
+ * @param {string} userId
+ * @param {string} classId
+ */
+function trackTeacherPresence(userId, classId) {
+  window._teacherPresenceChannel = supabase.channel('teacher-presence')
+  window._teacherPresenceChannel.subscribe(async (status) => {
+    if (status !== 'SUBSCRIBED') return
+    await window._teacherPresenceChannel.track({
+      user_id: userId,
+      class_id: classId,
+      online_at: new Date().toISOString()
+    })
+  })
+}
+
+/**
+ * Tears down the presence channel opened by trackTeacherPresence, if one
+ * is open -- see that function's doc comment for when this runs from
+ * within this file. main.js's cleanupRealtimeChannels reaches the same
+ * window._teacherPresenceChannel directly (same pattern it already uses
+ * for the Today tab's _attendanceChannel) rather than importing this, for
+ * when a whole dashboard is unmounted rather than just a tab within it.
+ */
+function cleanupTeacherPresenceChannel() {
+  if (window._teacherPresenceChannel) {
+    supabase.removeChannel(window._teacherPresenceChannel)
+    window._teacherPresenceChannel = null
+  }
 }
 
 /**

@@ -6,7 +6,9 @@
  *
  * Tabs:
  *  - Today: live status board showing which classes have submitted
- *    attendance today, updating in real time as teachers submit.
+ *    attendance today, updating in real time as teachers submit, plus a
+ *    live dot on any class whose teacher currently has the attendance
+ *    screen open right now (see renderTodayTab's teacher-presence viewer).
  *  - Classes: create classes and assign a teacher to each one.
  *  - Students: add students and assign them to a class.
  *  - Records: view attendance history, filterable by date range -- two
@@ -86,11 +88,15 @@ export async function renderAdminDashboard(container, userId) {
   // did, just no longer responsible for its own open/close/highlight
   // plumbing.
   renderNavDrawer(document.getElementById('nav-container'), ADMIN_TABS, 'today', (tabName) => {
-    // Clean up Realtime subscription when leaving Today tab
-    if (window._attendanceChannel) {
-      supabase.removeChannel(window._attendanceChannel)
-      window._attendanceChannel = null
-    }
+    // Clean up Realtime subscriptions when leaving Today tab -- both the
+    // attendance-submission channel and the teacher-presence viewer (see
+    // renderTodayTab below for what each one does).
+    ;['_attendanceChannel', '_teacherPresenceViewerChannel'].forEach(key => {
+      if (window[key]) {
+        supabase.removeChannel(window[key])
+        window[key] = null
+      }
+    })
 
     if (tabName === 'classes') renderClassesTab(userId)
     else if (tabName === 'students') renderStudentsTab(userId)
@@ -110,7 +116,13 @@ export async function renderAdminDashboard(container, userId) {
  * Today tab: a live status board of every class showing whether its
  * attendance has been submitted today, updating in real time as teachers
  * submit via a Supabase Realtime subscription (Postgres Changes on the
- * `attendance` table's INSERT event).
+ * `attendance` table's INSERT/UPDATE events) -- plus a second, independent
+ * Realtime subscription (Presence, not Postgres Changes) showing a live
+ * dot on any class whose teacher currently has the attendance form open,
+ * fed by teacher.js's trackTeacherPresence. The two are unrelated to each
+ * other: a class can be "Waiting" with its teacher's dot lit (they're
+ * looking at it right now, haven't submitted yet) just as easily as
+ * "Submitted" with no dot (they submitted and moved on).
  *
  * @param {string} userId - Signed-in admin's id -- threaded through to
  *   openClassReviewModal so a Save/Reject in the review modal can be
@@ -189,6 +201,7 @@ async function renderTodayTab(userId) {
       <div class="status-card ${state}" data-class-id="${c.id}" data-class-name="${c.name}">
         <strong>${c.name}</strong>
         <span class="teacher-name">${teacherNames}</span>
+        <span class="presence-dot" title="A teacher currently has this class's attendance screen open"></span>
         <span class="status-badge status-badge-clickable">${label}</span>
       </div>
     `
@@ -302,6 +315,31 @@ async function renderTodayTab(userId) {
         setCardStatus(card, payload.new.needs_rework ? 'needs-rework' : 'submitted')
       }
     )
+    .subscribe()
+
+  // Clean up any previous presence-viewer subscription
+  if (window._teacherPresenceViewerChannel) {
+    supabase.removeChannel(window._teacherPresenceViewerChannel)
+  }
+
+  // Live "a teacher currently has this open" dot -- separate channel from
+  // the attendance-submission one above, joined to the SAME channel name a
+  // teacher's own dashboard broadcasts to while their attendance form is
+  // open (see teacher.js's trackTeacherPresence). This side only ever
+  // listens -- it never calls .track() itself, so an admin viewing this
+  // tab never shows up as "present" on any class. `sync` fires with the
+  // full current presence state (not just what changed), so it's simplest
+  // to just recompute which classes are live and re-toggle every card's
+  // dot each time, rather than tracking joins/leaves incrementally.
+  window._teacherPresenceViewerChannel = supabase
+    .channel('teacher-presence')
+    .on('presence', { event: 'sync' }, () => {
+      const state = window._teacherPresenceViewerChannel.presenceState()
+      const liveClassIds = new Set(Object.values(state).flat().map(p => p.class_id))
+      tabContent.querySelectorAll('.status-card').forEach(card => {
+        card.classList.toggle('teacher-present', liveClassIds.has(card.dataset.classId))
+      })
+    })
     .subscribe()
 }
 

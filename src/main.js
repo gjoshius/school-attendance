@@ -21,6 +21,26 @@ import { APP_NAME, APP_LOGO_URL, APP_FOOTER_TEXT, PENDING_SETUP_MESSAGE } from '
 const mainContent = document.getElementById('main-content')
 const signOutBtn = document.getElementById('sign-out-btn')
 
+// A recovery link -- either a first-time invite (data_import/invite_teachers.mjs)
+// or a "Forgot password?" reset (auth.js) -- lands back here with
+// `type=recovery` in the URL hash (this app's Supabase client uses the
+// default implicit flow, so the token and type arrive as a hash fragment,
+// not a query string). Captured directly from the raw URL, synchronously,
+// before Supabase's own async hash processing even runs -- deliberately
+// NOT relying solely on Supabase firing a PASSWORD_RECOVERY auth event to
+// detect this, which multiple confirmed Supabase issues report as
+// unreliable, especially when the browser already has an existing session
+// in the same tab (it can fire SIGNED_IN instead -- see
+// https://github.com/orgs/supabase/discussions/14181). handleAuthState is
+// bypassed entirely below whenever this is true, regardless of which event
+// actually fires and regardless of any existing session -- so someone
+// already signed in on this browser (e.g. an admin testing a reset link)
+// can never get silently routed straight to their own dashboard instead of
+// the "Set Your Password" form. Cleared only once the password is actually
+// saved (see the USER_UPDATED check below), letting normal routing resume
+// from that point on.
+let isPasswordRecoveryLink = window.location.hash.includes('type=recovery')
+
 // Apply branding from config.js -- the tab title and header markup in
 // index.html carry static fallback text/values so the page never looks
 // broken before this runs, but this is what actually keeps them in sync
@@ -89,18 +109,27 @@ async function isAlsoAssignedTeacher(userId) {
 }
 
 /**
- * Cleans up the Today tab's Realtime subscription, if one is open. Needed
- * any time the admin dashboard is unmounted from underneath itself --
- * normally that's admin.js's own nav-drawer callback (switching tabs) or
- * main.js's sign-out handler, but renderDualRoleShell below unmounts the
- * whole admin dashboard (not just a tab within it) when an admin who also
- * teaches switches to "My Class", so it needs the same cleanup.
+ * Cleans up every open Realtime subscription this app can have running:
+ * the admin Today tab's attendance-submission channel
+ * (window._attendanceChannel), its teacher-presence viewer
+ * (window._teacherPresenceViewerChannel -- see admin.js's renderTodayTab),
+ * and a teacher's own presence broadcast while the attendance form is open
+ * (window._teacherPresenceChannel -- see teacher.js's
+ * trackTeacherPresence/cleanupTeacherPresenceChannel). Needed any time a
+ * dashboard is unmounted from underneath itself -- normally that's
+ * admin.js's/teacher.js's own tab-switch handling (switching within the
+ * SAME dashboard), or this file's sign-out handler below, but
+ * renderDualRoleShell below unmounts a WHOLE dashboard (not just a tab
+ * within it) when an admin who also teaches switches between "Admin" and
+ * "My Class", so it needs the same cleanup.
  */
-function cleanupAttendanceChannel() {
-  if (window._attendanceChannel) {
-    supabase.removeChannel(window._attendanceChannel)
-    window._attendanceChannel = null
-  }
+function cleanupRealtimeChannels() {
+  ;['_attendanceChannel', '_teacherPresenceViewerChannel', '_teacherPresenceChannel'].forEach(key => {
+    if (window[key]) {
+      supabase.removeChannel(window[key])
+      window[key] = null
+    }
+  })
 }
 
 /**
@@ -134,14 +163,14 @@ function renderDualRoleShell(container, userId) {
   const teacherBtn = document.getElementById('role-switch-teacher')
 
   const showAdmin = () => {
-    cleanupAttendanceChannel()
+    cleanupRealtimeChannels()
     adminBtn.classList.add('active')
     teacherBtn.classList.remove('active')
     renderAdminDashboard(contentEl, userId)
   }
 
   const showTeacher = () => {
-    cleanupAttendanceChannel()
+    cleanupRealtimeChannels()
     teacherBtn.classList.add('active')
     adminBtn.classList.remove('active')
     // Always the full teacher view here, never the restricted assistant
@@ -206,9 +235,9 @@ async function handleAuthState(session) {
 // Sign out when the button is clicked.
 // { scope: 'local' } only clears this browser's session (not other devices).
 signOutBtn.addEventListener('click', async () => {
-  // Clean up any open Realtime subscription so it doesn't keep running
-  // (and consuming a connection) after the admin signs out.
-  cleanupAttendanceChannel()
+  // Clean up any open Realtime subscriptions so none of them keep running
+  // (and consuming a connection) after signing out.
+  cleanupRealtimeChannels()
   await supabase.auth.signOut({ scope: 'local' })
 })
 
@@ -218,13 +247,24 @@ signOutBtn.addEventListener('click', async () => {
 supabase.auth.onAuthStateChange((event, session) => {
   // A password reset or first-time invite link (see auth.js and
   // data_import/invite_teachers.mjs) lands back here with a temporary
-  // session and this event -- show the "set new password" form instead
-  // of routing straight to a dashboard. Saving a new password there fires
-  // USER_UPDATED, which falls through to the normal routing below.
-  if (event === 'PASSWORD_RECOVERY') {
+  // session -- show the "set new password" form instead of routing
+  // straight to a dashboard. Checked two ways, not just the event name
+  // (see isPasswordRecoveryLink's own doc comment above for why the event
+  // alone isn't trustworthy): Supabase's own PASSWORD_RECOVERY event when
+  // it does fire, OR the URL itself having said `type=recovery` at load
+  // time, whichever case applies.
+  if (event === 'PASSWORD_RECOVERY' || isPasswordRecoveryLink) {
     signOutBtn.classList.add('hidden')
     renderSetPassword(mainContent)
     return
+  }
+
+  // Saving a new password (set-password.js) fires USER_UPDATED -- the one
+  // event that actually means this recovery flow finished, so this is the
+  // only place isPasswordRecoveryLink gets cleared, letting normal routing
+  // resume from here on for the rest of this page's lifetime.
+  if (event === 'USER_UPDATED') {
+    isPasswordRecoveryLink = false
   }
 
   handleAuthState(session)

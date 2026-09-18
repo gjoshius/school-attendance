@@ -1001,6 +1001,33 @@ h4 {
   color: #f59e0b;
 }
 
+/* Live "teacher currently has this open" dot -- see admin.js's
+   renderTodayTab (the presence-viewer subscription) and teacher.js's
+   trackTeacherPresence (what actually turns it on). Hidden by default;
+   .status-card.teacher-present is toggled purely in JS as the underlying
+   Realtime Presence state changes, no re-render needed. Blue rather than
+   green/red/amber so it never reads as another submission-status color --
+   this is about who's looking at the screen right now, not what they've
+   submitted. */
+.presence-dot {
+  display: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #3b82f6;
+  margin: 0 auto 0.4rem;
+}
+
+.status-card.teacher-present .presence-dot {
+  display: block;
+  animation: presence-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes presence-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
 /* --- Teacher Availability tab (src/admin.js) --------------------------------
    Reuses .status-card/.status-grid/.teacher-name from the Today tab above
    -- same board, same card shape -- but a card can hold more than one
