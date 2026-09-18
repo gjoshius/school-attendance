@@ -25,21 +25,40 @@ const signOutBtn = document.getElementById('sign-out-btn')
 // or a "Forgot password?" reset (auth.js) -- lands back here with
 // `type=recovery` in the URL hash (this app's Supabase client uses the
 // default implicit flow, so the token and type arrive as a hash fragment,
-// not a query string). Captured directly from the raw URL, synchronously,
-// before Supabase's own async hash processing even runs -- deliberately
-// NOT relying solely on Supabase firing a PASSWORD_RECOVERY auth event to
-// detect this, which multiple confirmed Supabase issues report as
-// unreliable, especially when the browser already has an existing session
-// in the same tab (it can fire SIGNED_IN instead -- see
-// https://github.com/orgs/supabase/discussions/14181). handleAuthState is
-// bypassed entirely below whenever this is true, regardless of which event
-// actually fires and regardless of any existing session -- so someone
-// already signed in on this browser (e.g. an admin testing a reset link)
-// can never get silently routed straight to their own dashboard instead of
+// not a query string). Deliberately NOT relying solely on Supabase firing a
+// PASSWORD_RECOVERY auth event to detect this, which multiple confirmed
+// Supabase issues report as unreliable (can fire SIGNED_IN instead,
+// especially with an existing session already in the browser -- see
+// https://github.com/orgs/supabase/discussions/14181).
+//
+// Also NOT relying on a plain JS variable holding this for the page's
+// whole lifetime, which turned out not to be enough on its own: on mobile
+// in particular, the recovery link can trigger more than one page load in
+// the same browser tab before the user ever reaches the password form --
+// e.g. an email app's in-app browser doing its own "verify, then redirect
+// to a clean URL" hop. Supabase's own hash cleanup (history.replaceState)
+// runs on that first load, so a SECOND load in the same tab often no
+// longer has `type=recovery` in the URL at all -- even though the
+// recovery session it already established is sitting right there in
+// localStorage (persistSession defaults to true), which then just looks
+// like a completely normal, already-signed-in session to any code that
+// only checked the URL once. sessionStorage survives a reload within the
+// same tab (unlike a plain variable), so the flag below is written the
+// moment a recovery link is ever detected and stays put across any such
+// reload, not just the first one.
+const RECOVERY_FLAG_KEY = 'htyg_password_recovery_in_progress'
+if (window.location.hash.includes('type=recovery')) {
+  sessionStorage.setItem(RECOVERY_FLAG_KEY, '1')
+}
+// handleAuthState is bypassed entirely below whenever this is true,
+// regardless of which event actually fires and regardless of any existing
+// session -- so someone already signed in on this browser (e.g. an admin
+// testing a reset link), or a session left over from an in-app-browser
+// reload, can never get silently routed straight to a dashboard instead of
 // the "Set Your Password" form. Cleared only once the password is actually
 // saved (see the USER_UPDATED check below), letting normal routing resume
 // from that point on.
-let isPasswordRecoveryLink = window.location.hash.includes('type=recovery')
+let isPasswordRecoveryLink = sessionStorage.getItem(RECOVERY_FLAG_KEY) === '1'
 
 // Apply branding from config.js -- the tab title and header markup in
 // index.html carry static fallback text/values so the page never looks
@@ -261,10 +280,13 @@ supabase.auth.onAuthStateChange((event, session) => {
 
   // Saving a new password (set-password.js) fires USER_UPDATED -- the one
   // event that actually means this recovery flow finished, so this is the
-  // only place isPasswordRecoveryLink gets cleared, letting normal routing
-  // resume from here on for the rest of this page's lifetime.
+  // only place isPasswordRecoveryLink gets cleared (both the in-memory
+  // flag and the sessionStorage one behind it -- see that flag's own doc
+  // comment above for why both exist), letting normal routing resume from
+  // here on, including across any later reload in this same tab.
   if (event === 'USER_UPDATED') {
     isPasswordRecoveryLink = false
+    sessionStorage.removeItem(RECOVERY_FLAG_KEY)
   }
 
   handleAuthState(session)
