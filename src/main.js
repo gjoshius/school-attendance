@@ -208,9 +208,40 @@ function renderDualRoleShell(container, userId) {
 }
 
 /**
+ * Called by set-password.js right after it successfully saves a new
+ * password (supabase.auth.updateUser succeeded). Clears both the in-memory
+ * and sessionStorage recovery flags and routes straight into the app from
+ * the current session, WITHOUT waiting for Supabase's USER_UPDATED auth
+ * event to do it via the onAuthStateChange listener below.
+ *
+ * That event turned out not to be a safe thing to depend on alone -- same
+ * class of unreliability as PASSWORD_RECOVERY (see isPasswordRecoveryLink's
+ * doc comment above) -- and skipping it left mobile users stuck on the
+ * "Set Your Password" form forever after a successful save, with no error
+ * shown and nothing to do next. The onAuthStateChange listener still
+ * clears the flags and calls handleAuthState on USER_UPDATED too, if/when
+ * it does fire; that's now just a harmless, redundant second call to
+ * handleAuthState (see handleAuthState's own note: safe to call more than
+ * once for the same session).
+ *
+ * @returns {Promise<void>}
+ */
+async function handlePasswordSaved() {
+  isPasswordRecoveryLink = false
+  sessionStorage.removeItem(RECOVERY_FLAG_KEY)
+  const { data: { session } } = await supabase.auth.getSession()
+  await handleAuthState(session)
+}
+
+/**
  * Render the correct view for the current auth session:
  *  - No session -> show the login form and hide the sign-out button.
  *  - Session present -> look up the user's role and render their dashboard.
+ *
+ * Idempotent enough to call more than once for the same session (it just
+ * re-renders) -- handlePasswordSaved above and the onAuthStateChange
+ * listener below can both end up calling this for the same USER_UPDATED
+ * moment, and that's fine.
  *
  * @param {import('@supabase/supabase-js').Session|null} session
  */
@@ -274,7 +305,7 @@ supabase.auth.onAuthStateChange((event, session) => {
   // time, whichever case applies.
   if (event === 'PASSWORD_RECOVERY' || isPasswordRecoveryLink) {
     signOutBtn.classList.add('hidden')
-    renderSetPassword(mainContent)
+    renderSetPassword(mainContent, handlePasswordSaved)
     return
   }
 
