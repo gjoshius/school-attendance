@@ -385,6 +385,16 @@ export const TEACHER_MESSAGES = {
   attendanceForm: {
     alreadySubmitted: 'Attendance already submitted for today.',
     noStudentsInClass: 'No students in this class yet.',
+    // Live running count shown just above the Submit button while marking
+    // attendance -- lets a teacher cross-check "that sounds about right"
+    // against how many kids are actually in the room before submitting,
+    // rather than only spotting a mistake after the fact on the locked
+    // "already submitted" view. Same string used in both places (see
+    // teacher.js's updateAttendanceSummary and renderAlreadySubmittedMessage).
+    // Returns HTML (the counts wrapped in <strong>), not plain text -- both
+    // call sites render it via innerHTML, and the numbers are what a
+    // teacher actually needs to read at a glance, not the word "present".
+    presentCount: (present, total) => `<strong>${present}</strong> of <strong>${total}</strong> present`,
     // Heading above the co-teacher Present/Absent toggles -- only shown
     // when the class has more than one teacher assigned.
     coTeacherHeading: 'Co-Teacher Attendance',
@@ -398,6 +408,20 @@ export const TEACHER_MESSAGES = {
     submitLabel: 'Submit Attendance',
     resubmitLabel: 'Resubmit Attendance',
     reworkSubmitted: 'Updated and resubmitted!',
+    // The read-only view of today's submitted attendance, shown on the
+    // locked "already submitted" screen -- see teacher.js's
+    // renderAlreadySubmittedMessage -- plus the button that reopens it for
+    // a teacher to fix a mistake themselves, without needing an admin to
+    // flag it for rework first (see data_import/56_teachers_self_edit_attendance.sql).
+    submittedAttendanceHeading: "Today's Attendance",
+    editAttendanceLabel: 'Edit Attendance',
+    // Shown above the form instead of reworkNotice when a teacher opened
+    // this themselves (via editAttendanceLabel above) rather than an admin
+    // sending it back -- same editable form either way, just a different
+    // reason to be looking at it.
+    selfEditNotice: 'Editing today\'s attendance. Make your changes and hit Save.',
+    saveChangesLabel: 'Save Changes',
+    attendanceUpdated: 'Attendance updated!',
     // The "what did you teach today" note -- optional, submitted together
     // with attendance (no separate save step/screen of its own) and shown
     // back as a chat bubble once locked, see data_import/30_class_lesson_notes.sql.

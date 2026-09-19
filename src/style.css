@@ -504,9 +504,14 @@ li.absent {
    Each student gets a row with a Present/Absent toggle pair. */
 /* .co-teacher-row (teacher.js's "Take Attendance" tab -- see
    data_import/18_teacher_attendance.sql) shares this styling since it's
-   the same row-with-a-toggle layout as a student row. */
+   the same row-with-a-toggle layout as a student row.
+   .student-row-readonly is the read-only counterpart shown on the locked
+   "already submitted" view (renderAlreadySubmittedMessage) -- same
+   name-left layout, just a .status-badge pill on the right instead of a
+   toggle pair, since nothing there is clickable. */
 .student-row,
-.co-teacher-row {
+.co-teacher-row,
+.student-row-readonly {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -570,6 +575,30 @@ li.absent {
 
 .toggle-btn:disabled {
   cursor: default;
+}
+
+/* Live "X of Y present" line, right under the student roster -- see
+   teacher.js's updateAttendanceSummary. Deliberately plain/neutral (not a
+   warning color like .rework-notice) since it's just informational, not
+   flagging a problem. */
+.attendance-summary {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #374151;
+  text-align: center;
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.75rem 0 0;
+}
+
+/* The two counts inside .attendance-summary's "X of Y present" (see
+   config.js's presentCount) -- bigger and in the app's accent color so
+   the numbers themselves are what jumps out at a glance, not just the
+   sentence around them. */
+.attendance-summary strong {
+  font-size: 1.15em;
+  color: #4f46e5;
 }
 
 #submit-attendance {
@@ -1001,6 +1030,21 @@ h4 {
   color: #f59e0b;
 }
 
+/* Per-student/co-teacher Present/Absent pill on the read-only "already
+   submitted" view -- see .student-row-readonly above and teacher.js's
+   renderAlreadySubmittedMessage. Same green/red language as the
+   .toggle-btn active states on the editable form, so a status reads the
+   same whether it's still clickable or already locked in. */
+.status-badge-present {
+  background: #f0fdf4;
+  color: #22c55e;
+}
+
+.status-badge-absent {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
 /* Live "teacher currently has this open" dot -- see admin.js's
    renderTodayTab (the presence-viewer subscription) and teacher.js's
    trackTeacherPresence (what actually turns it on). Hidden by default;
@@ -1265,6 +1309,36 @@ h4 {
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0 1rem;
+}
+
+/* Same shape as .rework-notice, but a neutral blue rather than amber --
+   this isn't a warning (nothing was rejected), just context for why the
+   form reopened editable: the teacher chose to fix it themselves. See
+   teacher.js's selfEditNoticeHtml. */
+.self-edit-notice {
+  font-size: 0.85rem;
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+/* "Edit Attendance" button on the locked "already submitted" view -- same
+   white/bordered treatment as .class-switch-btn, so it reads as a
+   secondary action rather than competing with the primary green/red
+   Present/Absent language or #submit-attendance's solid indigo. */
+.edit-attendance-btn {
+  width: auto;
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+  border-radius: 6px;
+  margin-top: 1rem;
+  cursor: pointer;
 }
 
 /* --- Lesson note (src/teacher.js's attendance form, src/admin.js's review

@@ -399,40 +399,122 @@ function renderNoClassMessage(myClass, today, session) {
 /**
  * Shown once today's attendance is settled -- either it was already
  * submitted before this render (see renderAttendanceForm's guard above),
- * or a submit/resubmit just succeeded (see the click handler at the
- * bottom of renderAttendanceForm). Fully replaces the form rather than
- * just disabling the submit button and leaving the Present/Absent toggles
- * in place: those toggles kept their click handlers and stayed visually
- * interactive even with no way to save anything after them, which looked
- * like the screen was still editable when it wasn't. Locked like this
- * until an admin rejects it for rework (data_import/22_attendance_rework_flag.sql),
- * which is the only thing that brings the form back.
+ * or a submit/resubmit/self-edit save just succeeded (see the click
+ * handler at the bottom of renderAttendanceForm). Shows exactly who was
+ * marked present/absent (read-only -- see statusRows below), not just a
+ * generic "submitted" message, so a teacher can actually check it's right
+ * without having to remember what they clicked.
  *
- * The lesson note is the one exception -- it's editable straight from this
- * locked view (see renderLessonNoteDisplay below), no admin/rework needed,
- * since a free-text note is low-stakes enough that self-editing it directly
- * is simpler and safer to just allow (see
- * data_import/31_class_lesson_notes_editable.sql).
+ * Also renders an "Edit Attendance" button, which re-opens
+ * renderAttendanceForm as editable -- updating the SAME rows in place
+ * rather than inserting new ones, exactly like an admin-triggered rework
+ * does (see data_import/56_teachers_self_edit_attendance.sql for the RLS
+ * change this needed: teachers previously could only get back into an
+ * editable form if an admin rejected their submission first). Fully
+ * replaces the form (rather than just disabling the submit button and
+ * leaving the Present/Absent toggles in place) once settled, so nothing
+ * looks clickable when it isn't -- same reasoning as the read-only rows
+ * below, just applied to the whole form.
+ *
+ * The lesson note is a separate, lower-stakes case that was already
+ * self-editable before this (see renderLessonNoteDisplay below and
+ * data_import/31_class_lesson_notes_editable.sql) -- unaffected by any of
+ * this, still its own Edit/Add link.
  *
  * @param {object} myClass
  * @param {string} today - 'YYYY-MM-DD'
  * @param {string|null} [noteText] - Today's lesson note for this class, if
  *   one was written (see data_import/30_class_lesson_notes.sql) -- shown
- *   back as a chat-style bubble below the success message, with an Edit
- *   link. Omitted (or blank) shows "no note left" plus an "+ Add a note"
- *   link instead.
+ *   back as a chat-style bubble below the summary, with an Edit link.
+ *   Omitted (or blank) shows "no note left" plus an "+ Add a note" link
+ *   instead.
  * @param {string} userId - Signed-in teacher's id, recorded as `teacher_id`
  *   if editing the note here creates or updates its row, and as the actor
  *   on the audit_log entry that edit writes.
+ * @param {object} existing
+ * @param {Array<{student_id: string, status: string}>} existing.studentRecords
+ *   Today's per-student status, for the read-only summary below. From a
+ *   fresh DB fetch when this is the very first render of an
+ *   already-submitted day (renderAttendanceForm's guard), or built fresh
+ *   from the form's final DOM state right after a save (see
+ *   renderAttendanceForm's submit handler) -- either way, always what was
+ *   actually written, not stale.
+ * @param {Array<{teacher_id: string, status: string}>} existing.teacherRecords
+ *   Same idea, for co-teachers (the signed-in teacher's own row is always
+ *   'present' and isn't shown as a toggle-able row here, same as the form
+ *   itself).
  */
-function renderAlreadySubmittedMessage(myClass, today, noteText, userId) {
+function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existing) {
   const tabContent = document.getElementById('tab-content')
+  const { studentRecords, teacherRecords } = existing
+
+  const studentStatusById = new Map((studentRecords || []).map(r => [r.student_id, r.status]))
+  const sortedStudents = [...(myClass.students || [])]
+    .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+  const presentCount = sortedStudents.filter(s => (studentStatusById.get(s.id) || 'present') === 'present').length
+
+  const buildStatusPill = (status) =>
+    `<span class="status-badge status-badge-${status}">${status === 'absent' ? 'Absent' : 'Present'}</span>`
+
+  const studentSummaryRows = sortedStudents
+    .map((s, i) => `
+      <div class="student-row-readonly">
+        <span>${i + 1}. ${toTitleCase(s.full_name)}</span>
+        ${buildStatusPill(studentStatusById.get(s.id) || 'present')}
+      </div>
+    `)
+    .join('')
+
+  // Same co-teacher set/order/exclusion as renderAttendanceForm's own
+  // coTeachers, so the row order here matches what was actually toggled.
+  const teacherStatusById = new Map((teacherRecords || []).map(r => [r.teacher_id, r.status]))
+  const coTeachers = (myClass.class_teachers || [])
+    .filter(ct => ct.teacher_id !== userId)
+    .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
+  const coTeacherSummaryRows = coTeachers
+    .map(ct => `
+      <div class="student-row-readonly">
+        <span>${toTitleCase(ct.profiles?.full_name) || 'Teacher'}</span>
+        ${buildStatusPill(teacherStatusById.get(ct.teacher_id) || 'present')}
+      </div>
+    `)
+    .join('')
+  const coTeacherSummaryHtml = coTeachers.length > 0 ? `
+    <h4>${TEACHER_MESSAGES.attendanceForm.coTeacherHeading}</h4>
+    <div>${coTeacherSummaryRows}</div>
+  ` : ''
+
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
     <p class="success">${TEACHER_MESSAGES.attendanceForm.alreadySubmitted}</p>
+    ${sortedStudents.length > 0 ? `
+      <h4>${TEACHER_MESSAGES.attendanceForm.submittedAttendanceHeading}</h4>
+      <p class="attendance-summary">${TEACHER_MESSAGES.attendanceForm.presentCount(presentCount, sortedStudents.length)}</p>
+      <div id="submitted-student-list">${studentSummaryRows}</div>
+    ` : ''}
+    ${coTeacherSummaryHtml}
     <div id="lesson-note-display"></div>
+    <button type="button" id="edit-attendance-btn" class="edit-attendance-btn">${TEACHER_MESSAGES.attendanceForm.editAttendanceLabel}</button>
   `
   renderLessonNoteDisplay(myClass, today, noteText, userId)
+
+  // Reopens the same form component used for a fresh submission or an
+  // admin-triggered rework, just with isSelfEdit set instead of
+  // needsRework -- see renderAttendanceForm for how those two differ (only
+  // in notice text and audit-log wording; the actual save behavior, update
+  // rows in place rather than insert, is identical for both). No re-fetch
+  // needed: studentRecords/teacherRecords/noteText passed into this
+  // function are exactly what the form needs to prefill itself.
+  document.getElementById('edit-attendance-btn').addEventListener('click', () => {
+    renderAttendanceForm(myClass, today, userId, {
+      hasRecords: true,
+      needsRework: false,
+      isSelfEdit: true,
+      studentRecords: studentRecords || [],
+      teacherRecords: teacherRecords || [],
+      existingNote: noteText ? { note: noteText } : null
+    })
+  })
 }
 
 /**
@@ -581,12 +663,20 @@ export function buildLessonNoteBubbleHtml(noteText) {
  * If attendance was already submitted today and nothing's flagged, shows a
  * read-only message instead so the same class can't be marked twice in one
  * day. If an admin has flagged it for rework instead (see
- * data_import/22_attendance_rework_flag.sql), the form reopens pre-filled
- * with exactly what was submitted -- every toggle defaults to its existing
- * status rather than resetting to Present -- so the teacher only has to
- * change whatever was actually wrong and hit Resubmit; that updates the
- * existing rows in place (and clears the flag) instead of inserting new
- * ones.
+ * data_import/22_attendance_rework_flag.sql), OR the teacher themselves
+ * clicked "Edit Attendance" on that read-only view (existing.isSelfEdit --
+ * see renderAlreadySubmittedMessage and
+ * data_import/56_teachers_self_edit_attendance.sql), the form reopens
+ * pre-filled with exactly what was submitted -- every toggle defaults to
+ * its existing status rather than resetting to Present -- so only whatever
+ * was actually wrong needs to change before saving again; that updates the
+ * existing rows in place (and, for the rework case, clears the flag)
+ * instead of inserting new ones. needsRework and isSelfEdit both take this
+ * same "update in place" path and are otherwise handled identically below
+ * except for notice text and audit-log wording -- kept as two separate
+ * flags rather than one, purely so the on-screen notice can correctly say
+ * *why* the form reopened (an admin rejected it vs. the teacher chose to
+ * fix it themselves).
  *
  * @param {object} myClass - The teacher's class row, including `.students`
  *   and `.class_teachers` (each with `.teacher_id` and `.profiles.full_name`).
@@ -596,8 +686,10 @@ export function buildLessonNoteBubbleHtml(noteText) {
  *   automatically as `present` for their own teacher_attendance row.
  * @param {object} existing
  * @param {boolean} existing.hasRecords - Whether today's attendance rows
- *   for this class already exist (fresh or flagged either way).
- * @param {boolean} existing.needsRework - Whether they're flagged for rework.
+ *   for this class already exist (fresh, flagged, or self-edit either way).
+ * @param {boolean} existing.needsRework - Whether an admin flagged them for rework.
+ * @param {boolean} [existing.isSelfEdit] - Whether the teacher themselves
+ *   requested to edit an already-submitted (not otherwise flagged) day.
  * @param {Array} existing.studentRecords - Today's `attendance` rows for
  *   this class, if any -- `{id, student_id, status, needs_rework}`.
  * @param {Array} existing.teacherRecords - Today's `teacher_attendance`
@@ -605,13 +697,14 @@ export function buildLessonNoteBubbleHtml(noteText) {
  */
 function renderAttendanceForm(myClass, today, userId, existing) {
   const tabContent = document.getElementById('tab-content')
-  const { hasRecords, needsRework, studentRecords, teacherRecords, existingNote } = existing
+  const { hasRecords, needsRework, isSelfEdit, studentRecords, teacherRecords, existingNote } = existing
 
   // Block duplicate submissions for the same day -- but only when nothing's
-  // flagged. A flagged submission falls through to the form below instead,
-  // pre-filled rather than blank.
-  if (hasRecords && !needsRework) {
-    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId)
+  // flagged and the teacher hasn't asked to edit it themselves either. A
+  // flagged (or self-edit-requested) submission falls through to the form
+  // below instead, pre-filled rather than blank.
+  if (hasRecords && !needsRework && !isSelfEdit) {
+    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId, { studentRecords, teacherRecords })
     return
   }
 
@@ -668,8 +761,29 @@ function renderAttendanceForm(myClass, today, userId, existing) {
     <div id="co-teacher-list">${coTeacherRows}</div>
   ` : ''
 
+  // Only one of these ever applies at once (needsRework and isSelfEdit are
+  // mutually exclusive in practice -- see renderAlreadySubmittedMessage,
+  // the only place isSelfEdit is ever set to true, which only happens from
+  // the non-flagged branch of its own caller's guard above), but written as
+  // two independent checks rather than an if/else chain so a future case
+  // that's neither still falls through to the plain (fresh submission)
+  // wording without needing to touch this.
   const reworkNoticeHtml = needsRework ? `<p class="rework-notice">${TEACHER_MESSAGES.attendanceForm.reworkNotice}</p>` : ''
-  const submitLabel = needsRework ? TEACHER_MESSAGES.attendanceForm.resubmitLabel : TEACHER_MESSAGES.attendanceForm.submitLabel
+  const selfEditNoticeHtml = isSelfEdit ? `<p class="self-edit-notice">${TEACHER_MESSAGES.attendanceForm.selfEditNotice}</p>` : ''
+  const submitLabel = needsRework
+    ? TEACHER_MESSAGES.attendanceForm.resubmitLabel
+    : isSelfEdit
+      ? TEACHER_MESSAGES.attendanceForm.saveChangesLabel
+      : TEACHER_MESSAGES.attendanceForm.submitLabel
+
+  // Live "X of Y present" count -- see updateAttendanceSummary below for
+  // where it's kept in sync with every toggle click. Only rendered when
+  // there's actually a student roster to count (mirrors hasAnyoneToMark's
+  // own students-only half below); a co-teacher-only edge case has nothing
+  // for this to count.
+  const attendanceSummaryHtml = sortedStudents.length > 0
+    ? `<p id="attendance-summary" class="attendance-summary"></p>`
+    : ''
 
   // Nothing to mark at all (no students, no co-teachers) -- the button
   // stays disabled rather than letting a click submit an empty class.
@@ -698,12 +812,32 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
     ${reworkNoticeHtml}
+    ${selfEditNoticeHtml}
     <div id="student-list">${studentRows || `<p>${TEACHER_MESSAGES.attendanceForm.noStudentsInClass}</p>`}</div>
+    ${attendanceSummaryHtml}
     ${coTeacherSectionHtml}
     ${lessonNoteSectionHtml}
     <button id="submit-attendance"${hasAnyoneToMark ? '' : ' disabled'}>${submitLabel}</button>
     <p id="submit-message" class="hidden"></p>
   `
+
+  // Recomputes the "X of Y present" line from whatever's actually toggled
+  // active in #student-list right now -- scoped to that container
+  // specifically (not .toggle-btn generally) so co-teacher toggles, which
+  // live in a separate #co-teacher-list, never get counted as "kids".
+  // Called once below to reflect the form's starting state, then again on
+  // every student toggle click.
+  const summaryEl = document.getElementById('attendance-summary')
+  const updateAttendanceSummary = () => {
+    if (!summaryEl) return
+    const presentCount = document.querySelectorAll('#student-list .present-btn.active').length
+    // innerHTML, not textContent -- presentCount's message now wraps the
+    // numbers in <strong> (see config.js) so they stand out visually; both
+    // are plain integers computed right above, never anything that needs
+    // escaping.
+    summaryEl.innerHTML = TEACHER_MESSAGES.attendanceForm.presentCount(presentCount, sortedStudents.length)
+  }
+  updateAttendanceSummary()
 
   // Make toggle buttons switch between Present and Absent within each row
   // (shared by both student rows and co-teacher rows)
@@ -712,6 +846,7 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       btn.addEventListener('click', () => {
         row.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'))
         btn.classList.add('active')
+        updateAttendanceSummary()
       })
     })
   })
@@ -774,13 +909,13 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       { onConflict: 'class_id,date' }
     )
 
-    if (needsRework) {
-      // Reworking an existing submission: update each already-existing row
-      // in place (by its id) instead of inserting new ones, and clear its
-      // needs_rework flag -- the row IS the original submission, just
-      // corrected. RLS only allows this while needs_rework is still true
-      // (see data_import/22_attendance_rework_flag.sql), which is exactly
-      // the state this branch only runs in.
+    // Both an admin-triggered rework and a teacher-initiated self-edit
+    // (see renderAlreadySubmittedMessage's "Edit Attendance" button and
+    // data_import/56_teachers_self_edit_attendance.sql) update the
+    // existing rows in place rather than inserting new ones -- the row IS
+    // the original submission, just corrected, either way.
+    const isEditingExisting = needsRework || isSelfEdit
+    if (isEditingExisting) {
       const studentRecordIdByStudentId = new Map(studentRecords.map(r => [r.student_id, r.id]))
       const teacherRecordIdByTeacherId = new Map(teacherRecords.map(r => [r.teacher_id, r.id]))
 
@@ -852,24 +987,50 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       // why this was disabled in the first place.
       submitBtn.disabled = false
     } else {
+      const auditAction = needsRework ? 'attendance.resubmitted' : isSelfEdit ? 'attendance.self_edited' : 'attendance.submitted'
+      const auditVerb = needsRework ? 'Resubmitted' : isSelfEdit ? 'Edited' : 'Submitted'
       logAudit(
-        userId, 'teacher',
-        needsRework ? 'attendance.resubmitted' : 'attendance.submitted',
+        userId, 'teacher', auditAction,
         'attendance', myClass.id,
-        `${needsRework ? 'Resubmitted' : 'Submitted'} ${myClass.name} attendance for ${today} (${presentCount} present, ${absentCount} absent)`,
+        `${auditVerb} ${myClass.name} attendance for ${today} (${presentCount} present, ${absentCount} absent)`,
         { class_id: myClass.id, date: today, present_count: presentCount, absent_count: absentCount, lesson_note_word_count: countWords(noteText) }
       )
       // Toast gives the one-time "you just did that" confirmation (worded
-      // differently for a fresh submit vs. a rework resubmit); the screen
-      // itself replaces the whole form with the locked read-only view
-      // (see renderAlreadySubmittedMessage) rather than just disabling
-      // the submit button in place -- otherwise every Present/Absent
-      // toggle stayed clickable with nothing left for a click to do,
-      // which looked like the screen could still be changed when it
-      // couldn't. Today's records are settled now; only an admin
-      // rejecting this for rework brings the form back.
-      showToast(needsRework ? TEACHER_MESSAGES.attendanceForm.reworkSubmitted : TEACHER_MESSAGES.attendanceForm.attendanceSubmitted)
-      renderAlreadySubmittedMessage(myClass, today, noteText, userId)
+      // differently for each of the three cases); the screen itself
+      // replaces the whole form with the locked read-only view (see
+      // renderAlreadySubmittedMessage) rather than just disabling the
+      // submit button in place -- otherwise every Present/Absent toggle
+      // stayed clickable with nothing left for a click to do, which looked
+      // like the screen could still be changed when it couldn't. Today's
+      // records are settled again now; getting back into an editable form
+      // from here means either an admin rejecting it for rework, or
+      // clicking that view's own "Edit Attendance" button.
+      showToast(
+        needsRework ? TEACHER_MESSAGES.attendanceForm.reworkSubmitted
+          : isSelfEdit ? TEACHER_MESSAGES.attendanceForm.attendanceUpdated
+            : TEACHER_MESSAGES.attendanceForm.attendanceSubmitted
+      )
+
+      // Re-fetched rather than built from the DOM or reused from this
+      // render's own studentRecords/teacherRecords: both of those are
+      // missing something the *next* edit needs -- the DOM never had each
+      // row's id in the first place (only data-student-id/data-teacher-id),
+      // and this render's original studentRecords/teacherRecords still
+      // reflect whatever was toggled BEFORE this save, not what was just
+      // written. Getting real ids here means if the teacher immediately
+      // clicks "Edit Attendance" again on the view this is about to render,
+      // that click's update-in-place writes go through the row's actual id
+      // (see the isEditingExisting branch above) instead of silently
+      // matching nothing. One extra pair of queries, right after a save --
+      // not on every render.
+      const [{ data: freshStudentRecords }, { data: freshTeacherRecords }] = await Promise.all([
+        supabase.from('attendance').select('id, student_id, status').eq('class_id', myClass.id).eq('date', today),
+        supabase.from('teacher_attendance').select('id, teacher_id, status').eq('class_id', myClass.id).eq('date', today)
+      ])
+      renderAlreadySubmittedMessage(myClass, today, noteText, userId, {
+        studentRecords: freshStudentRecords || [],
+        teacherRecords: freshTeacherRecords || []
+      })
     }
   })
 }

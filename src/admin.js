@@ -335,7 +335,16 @@ async function renderTodayTab(userId) {
     .channel('teacher-presence')
     .on('presence', { event: 'sync' }, () => {
       const state = window._teacherPresenceViewerChannel.presenceState()
-      const liveClassIds = new Set(Object.values(state).flat().map(p => p.class_id))
+      // String(...) on both sides -- card.dataset.classId is always a
+      // string (DOM dataset attributes always are), but p.class_id came
+      // over the wire from teacher.js's .track({ class_id: myClass.id })
+      // and, depending on whatever type `classes.id` actually is in
+      // Postgres, could arrive as a JS number instead. A Set uses strict
+      // equality, so a number/string mismatch there would silently mean
+      // liveClassIds.has(...) never matches -- no error, just a dot that
+      // never lights up. Cheap enough to always normalize rather than
+      // depend on the id type never changing.
+      const liveClassIds = new Set(Object.values(state).flat().map(p => String(p.class_id)))
       tabContent.querySelectorAll('.status-card').forEach(card => {
         card.classList.toggle('teacher-present', liveClassIds.has(card.dataset.classId))
       })
