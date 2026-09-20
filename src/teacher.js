@@ -670,9 +670,16 @@ export function buildLessonNoteBubbleHtml(noteText) {
  * pre-filled with exactly what was submitted -- every toggle defaults to
  * its existing status rather than resetting to Present -- so only whatever
  * was actually wrong needs to change before saving again; that updates the
- * existing rows in place (and, for the rework case, clears the flag)
- * instead of inserting new ones. needsRework and isSelfEdit both take this
- * same "update in place" path and are otherwise handled identically below
+ * existing rows in place (and, for the rework case, clears the flag) for
+ * anyone who already had one, and inserts a fresh row for anyone who
+ * didn't -- a student or co-teacher who's newly on the roster since the
+ * original submission (e.g. a class/optional-class reassignment made
+ * after that day was already submitted -- see
+ * data_import/64_assign_gita_optional_class.sql for a real example) has no
+ * existing row to update, so would otherwise get silently skipped despite
+ * the form showing a toggle for them and the save reporting success.
+ * needsRework and isSelfEdit both take this same path and are otherwise
+ * handled identically below
  * except for notice text and audit-log wording -- kept as two separate
  * flags rather than one, purely so the on-screen notice can correctly say
  * *why* the form reopened (an admin rejected it vs. the teacher chose to
@@ -919,29 +926,47 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       const studentRecordIdByStudentId = new Map(studentRecords.map(r => [r.student_id, r.id]))
       const teacherRecordIdByTeacherId = new Map(teacherRecords.map(r => [r.teacher_id, r.id]))
 
+      // A student with no existing row for this date -- newly on the
+      // roster since the original submission, rather than someone whose
+      // status is being corrected -- has no id to update. `.eq('id',
+      // undefined)` doesn't error, it just matches zero rows, so this
+      // used to silently do nothing for them while still reporting
+      // success. Insert a fresh row instead whenever there's no existing
+      // one to update.
       const studentUpdates = [...tabContent.querySelectorAll('.student-row')].map(row => {
         const activeBtn = row.querySelector('.toggle-btn.active')
         const status = activeBtn ? activeBtn.dataset.status : 'present'
-        const recordId = studentRecordIdByStudentId.get(row.dataset.studentId)
-        return supabase.from('attendance').update({ status, needs_rework: false }).eq('id', recordId)
+        const studentId = row.dataset.studentId
+        const recordId = studentRecordIdByStudentId.get(studentId)
+        return recordId
+          ? supabase.from('attendance').update({ status, needs_rework: false }).eq('id', recordId)
+          : supabase.from('attendance').insert({ student_id: studentId, class_id: myClass.id, date: today, status, marked_by: userId })
       })
 
       // The signed-in teacher's own row is reset to present + unflagged
       // too (submitting is itself proof they were there, same as a fresh
-      // submission), plus one update per co-teacher row from whatever its
+      // submission), plus one write per co-teacher row from whatever its
       // toggle is currently set to. Either row might not exist if the
-      // original submission predates a co-teacher being added -- skipped
-      // rather than erroring in that edge case.
+      // original submission predates a co-teacher being added to the
+      // class -- inserted fresh in that case, same reasoning as students
+      // above, rather than silently skipped.
       const teacherUpdates = []
       const ownRecordId = teacherRecordIdByTeacherId.get(userId)
-      if (ownRecordId) {
-        teacherUpdates.push(supabase.from('teacher_attendance').update({ status: 'present', needs_rework: false }).eq('id', ownRecordId))
-      }
+      teacherUpdates.push(
+        ownRecordId
+          ? supabase.from('teacher_attendance').update({ status: 'present', needs_rework: false }).eq('id', ownRecordId)
+          : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: userId, date: today, status: 'present', marked_by: userId })
+      )
       tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
         const activeBtn = row.querySelector('.toggle-btn.active')
         const status = activeBtn ? activeBtn.dataset.status : 'present'
-        const recordId = teacherRecordIdByTeacherId.get(row.dataset.teacherId)
-        if (recordId) teacherUpdates.push(supabase.from('teacher_attendance').update({ status, needs_rework: false }).eq('id', recordId))
+        const teacherId = row.dataset.teacherId
+        const recordId = teacherRecordIdByTeacherId.get(teacherId)
+        teacherUpdates.push(
+          recordId
+            ? supabase.from('teacher_attendance').update({ status, needs_rework: false }).eq('id', recordId)
+            : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: teacherId, date: today, status, marked_by: userId })
+        )
       })
 
       writes = Promise.all([...studentUpdates, ...teacherUpdates, noteWrite])
