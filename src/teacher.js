@@ -1391,44 +1391,139 @@ function renderAttendanceForm(myClass, today, userId, existing) {
 }
 
 /**
- * Render the "History" tab: all attendance records for this class,
- * grouped by date (most recent first).
+ * Render the "History" tab: every past attendance date for this class,
+ * newest first, each collapsed by default to just the date and a quick
+ * present/absent count (see TEACHER_MESSAGES.history.dateSummary) --
+ * expanding one (a plain `<details>`/`<summary>`, same pattern as
+ * renderTeacherCalendar's "Past Dates" section) reveals the actual
+ * breakdown: Present, then Absent, alphabetical by name within each --
+ * split into the class's real groups first (see
+ * data_import/85_class_groups_generalized.sql), if it has any, so a
+ * teacher can cross-check a past day at a glance rather than scanning one
+ * long mixed list. A class with no groups defined skips the group
+ * sub-headings entirely and just shows the roster-wide Present/Absent
+ * split, same as every class showed before this existed.
  *
- * @param {object} myClass - The teacher's class row.
+ * Deliberately keyed off myClass.students/myClass.class_groups (this
+ * class's CURRENT roster and groups, already fetched once by
+ * renderTeacherDashboard) rather than trying to reconstruct either as they
+ * stood on that historical date -- this app doesn't track roster or group
+ * history anywhere else either (a student who's since changed grade or
+ * optional class already shows the same way on every other past-facing
+ * view), so this stays consistent with that rather than introducing a new
+ * kind of historical snapshot just for this one tab.
+ *
+ * @param {object} myClass - The teacher's class row, including `.students`
+ *   (each with `.class_group_id`) and `.class_groups` (each `{id, name}`).
  */
 async function renderTeacherHistory(myClass) {
   const tabContent = document.getElementById('tab-content')
+  const messages = TEACHER_MESSAGES.history
 
-  // Fetch attendance records for this class, newest first
+  // student_id (not just the nested students.full_name) is needed here to
+  // look up each record's CURRENT group via groupIdByStudentId below.
   const { data: records } = await supabase
     .from('attendance')
-    .select('date, status, students(full_name)')
+    .select('date, status, student_id, students(full_name)')
     .eq('class_id', myClass.id)
     .order('date', { ascending: false })
 
   if (!records || records.length === 0) {
-    tabContent.innerHTML = '<p>No attendance records yet.</p>'
+    tabContent.innerHTML = `<p>${messages.noRecordsYet}</p>`
     return
   }
 
-  // Group records by date for display
-  const grouped = {}
+  const groupIdByStudentId = new Map((myClass.students || []).map(s => [s.id, s.class_group_id || null]))
+  const classGroups = myClass.class_groups || []
+  const hasGroups = classGroups.length > 0
+  // Real groups sorted by name (this class's own nested class_groups embed
+  // carries no guaranteed order), same alphabetical convention the admin's
+  // Class Groups tab itself fetches with.
+  const sortedGroups = [...classGroups].sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+
+  // Group records by date, newest first (already the query's own order).
+  const entriesByDate = new Map()
   records.forEach(r => {
-    if (!grouped[r.date]) grouped[r.date] = []
-    grouped[r.date].push(r)
+    if (!entriesByDate.has(r.date)) entriesByDate.set(r.date, [])
+    entriesByDate.get(r.date).push(r)
   })
 
-  let html = `<h3>Attendance History — ${myClass.name}</h3>`
-  for (const [date, entries] of Object.entries(grouped)) {
-    html += `<h4>${date}</h4><ul>`
-    entries.forEach(entry => {
-      const statusClass = entry.status === 'present' ? 'present' : 'absent'
-      html += `<li class="${statusClass}">${toTitleCase(entry.students?.full_name)} — ${entry.status}</li>`
-    })
-    html += '</ul>'
+  // Alphabetical by full_name (which is always "First Last" in this app's
+  // data -- see every other student sort in this file) within one
+  // present/absent bucket, rendered as plain name rows -- no per-row
+  // status pill needed since the heading above each list already says
+  // which bucket it is.
+  const buildNameRows = (entries) => [...entries]
+    .sort((a, b) => (a.students?.full_name || '').localeCompare(b.students?.full_name || ''))
+    .map(e => `<div class="history-name-row">${toTitleCase(e.students?.full_name) || 'Unknown'}</div>`)
+    .join('')
+
+  const buildPresentAbsentHtml = (entries) => {
+    const present = entries.filter(e => e.status === 'present')
+    const absent = entries.filter(e => e.status !== 'present')
+    return `
+      <div class="history-status-block">
+        <h5>${messages.presentHeading(present.length)}</h5>
+        ${present.length > 0 ? buildNameRows(present) : `<p class="history-empty">${messages.nobodyPresent}</p>`}
+      </div>
+      <div class="history-status-block">
+        <h5>${messages.absentHeading(absent.length)}</h5>
+        ${absent.length > 0 ? buildNameRows(absent) : `<p class="history-empty">${messages.nobodyAbsent}</p>`}
+      </div>
+    `
   }
 
-  tabContent.innerHTML = html
+  const dateBlocksHtml = [...entriesByDate.entries()].map(([date, entries]) => {
+    const presentCount = entries.filter(e => e.status === 'present').length
+
+    const bodyHtml = hasGroups
+      ? sortedGroups
+          .map(g => {
+            const groupEntries = entries.filter(e => groupIdByStudentId.get(e.student_id) === g.id)
+            // Skip a group with zero records on this date entirely --
+            // most classes will have far more dates than groups, and an
+            // always-empty section for a group added after this date
+            // (or one nobody in was ever marked for) would just be noise.
+            if (groupEntries.length === 0) return ''
+            return `
+              <div class="history-group-block">
+                <h4>${escapeHtml(g.name)}</h4>
+                ${buildPresentAbsentHtml(groupEntries)}
+              </div>
+            `
+          })
+          .join('') +
+        // Anyone with a record but no current group (e.g. added to the
+        // roster, or ungrouped, since this date) -- same reasoning as
+        // renderGroupPicker's own "Ungrouped Students" card: shown, not
+        // silently folded into a group they were never actually part of.
+        (() => {
+          const ungroupedEntries = entries.filter(e => !groupIdByStudentId.get(e.student_id))
+          if (ungroupedEntries.length === 0) return ''
+          return `
+            <div class="history-group-block">
+              <h4>${TEACHER_MESSAGES.attendanceForm.groupPicker.ungroupedLabel}</h4>
+              ${buildPresentAbsentHtml(ungroupedEntries)}
+            </div>
+          `
+        })()
+      : buildPresentAbsentHtml(entries)
+
+    return `
+      <details class="history-date-block">
+        <summary>
+          <span class="history-date">${date}</span>
+          <span class="history-date-summary">${messages.dateSummary(presentCount, entries.length)}</span>
+        </summary>
+        ${bodyHtml}
+      </details>
+    `
+  }).join('')
+
+  tabContent.innerHTML = `
+    <h3>${messages.heading(myClass.name)}</h3>
+    ${dateBlocksHtml}
+  `
 }
 
 /**

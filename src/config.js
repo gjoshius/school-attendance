@@ -538,6 +538,22 @@ export const TEACHER_MESSAGES = {
       openButtonLabel: 'Take Attendance',
       backToGroupsLabel: '← Switch group'
     }
+  },
+  // "History" tab -- see teacher.js's renderTeacherHistory. Each date is
+  // collapsed by default (just the date and a quick present/absent count),
+  // and expands into Present-then-Absent, alphabetical within each, split
+  // by group first for a class that has any (see data_import/85_class_
+  // groups_generalized.sql) -- laid out this way specifically so a teacher
+  // can cross-check a past day at a glance rather than scanning one long
+  // mixed list.
+  history: {
+    heading: (className) => `Attendance History — ${className}`,
+    noRecordsYet: 'No attendance records yet.',
+    dateSummary: (present, total) => `${present} of ${total} present`,
+    presentHeading: (count) => `Present (${count})`,
+    absentHeading: (count) => `Absent (${count})`,
+    nobodyPresent: 'No one was present.',
+    nobodyAbsent: 'No one was absent.'
   }
 }
 

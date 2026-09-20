@@ -1704,6 +1704,78 @@ h4 {
   margin-top: 0.5rem;
 }
 
+/* --- Teacher "History" tab (src/teacher.js's renderTeacherHistory) --------
+   One collapsible <details> per date (same summary-toggle pattern as
+   .past-sessions above), collapsed to just the date + a quick count until
+   expanded -- then Present-then-Absent, alphabetical within each, split by
+   group first for a class that has any (see data_import/85_class_groups_
+   generalized.sql). */
+.history-date-block {
+  background: white;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.6rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.history-date-block summary {
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  list-style: none;
+}
+
+.history-date-block summary::-webkit-details-marker {
+  display: none;
+}
+
+.history-date {
+  font-weight: 600;
+  color: #374151;
+}
+
+.history-date-summary {
+  font-size: var(--font-small);
+  color: #6b7280;
+}
+
+.history-group-block {
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #f3f4f6;
+}
+
+.history-group-block h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.9rem;
+  color: #4f46e5;
+}
+
+.history-status-block {
+  margin: 0.4rem 0 0.6rem;
+}
+
+.history-status-block h5 {
+  margin: 0 0 0.3rem;
+  font-size: var(--font-label);
+  color: #6b7280;
+}
+
+.history-name-row {
+  padding: 0.2rem 0;
+  font-size: var(--font-label);
+  color: #374151;
+}
+
+.history-empty {
+  font-size: var(--font-label);
+  color: #9ca3af;
+  font-style: italic;
+  margin: 0.2rem 0;
+}
+
 /* "+ Add Date" form at the bottom of the panel */
 .add-session-form {
   display: flex;
