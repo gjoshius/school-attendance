@@ -1086,23 +1086,26 @@ async function renderClassesTab(userId) {
   const tabContent = document.getElementById('tab-content')
 
   // Everyone who's already signed up for an account and can be assigned to
-  // teach a class -- both plain teachers AND an admin who's also
-  // personally assigned to teach one (see main.js's renderDualRoleShell
-  // and data_import/34_promote_vidya_to_admin.sql). class_teachers itself
-  // never checks profiles.role (see the RLS policies throughout
-  // data_import/*.sql -- they all key off class_teachers membership, not
-  // role), so restricting this query to role = 'teacher' alone used to
-  // silently drop any such admin from this list entirely: they'd then
-  // fall through to the "pending registration" branch below instead of
-  // being recognized as already active, and the already-assigned check
-  // further down (assignedRefsAnywhere, which is keyed off
-  // `active:<profiles.id>`) would never match their mismatched
+  // teach a class -- plain teachers, an admin who's also personally
+  // assigned to teach one (see main.js's renderDualRoleShell and
+  // data_import/34_promote_vidya_to_admin.sql), AND assistants (see
+  // data_import/50_assistant_role.sql). class_teachers itself never checks
+  // profiles.role (see the RLS policies throughout data_import/*.sql --
+  // they all key off class_teachers membership, not role), so restricting
+  // this query too narrowly silently drops whoever's missing from this
+  // list entirely: they'd then fall through to the "pending registration"
+  // branch below instead of being recognized as already active, and the
+  // already-assigned check further down (assignedRefsAnywhere, which is
+  // keyed off `active:<profiles.id>`) would never match their mismatched
   // `pending:<email>` ref -- so they'd wrongly still show up in the
-  // draggable "first assignment" pool even after already being assigned.
+  // draggable "first assignment" pool (labeled "(assistant, pending)" for
+  // an assistant) even after already signing up and being fully active.
+  // 'assistant' was missing here from when that role was first added,
+  // which is exactly this bug in practice, not just in theory.
   const { data: activeTeachers, error: activeTeachersError } = await supabase
     .from('profiles')
     .select('id, full_name, email')
-    .in('role', ['teacher', 'admin'])
+    .in('role', ['teacher', 'admin', 'assistant'])
 
   // Every teacher/volunteer who filled out the registration form, signed
   // up or not (see data_import/08b_teacher_registrations_data.sql) -- so
