@@ -1045,6 +1045,50 @@ h4 {
   color: #ef4444;
 }
 
+/* --- Attendance group picker (src/teacher.js's renderGroupPicker) ---------
+   Shown instead of a single roster for a class with at least one
+   admin-defined group (see data_import/85_class_groups_generalized.sql's
+   class_groups table and admin.js's Class Groups tab) -- one card per
+   group, reusing the exact same .status-grid/.status-card/.status-badge
+   shapes and waiting/submitted/needs-rework colors as the admin Today
+   tab's class board above, so "not yet submitted" vs "submitted" vs "sent
+   back for rework" reads the
+   same everywhere in the app. Only what's specific to this picker (the
+   student count and the CTA button) is new below. */
+.group-picker-list {
+  margin-top: 0.75rem;
+}
+
+.group-picker-count {
+  font-size: var(--font-small);
+  color: #6b7280;
+  margin: 0 0 0.5rem;
+}
+
+/* The "Ungrouped Students" card's extra explanation -- deliberately a
+   warning color (not the card's own red/green/amber border, which still
+   reflects that group's actual submission status) so it reads as "this
+   needs an admin's attention" without being confused with "not yet
+   submitted today". */
+.group-picker-ungrouped-hint {
+  font-size: var(--font-small);
+  color: #92400e;
+  background: #fffbeb;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  margin: 0 0 0.5rem;
+}
+
+.group-picker-open-btn {
+  width: auto;
+  background: #4f46e5;
+  color: white;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+  border-radius: 6px;
+  margin-top: 0.25rem;
+}
+
 /* Live "teacher currently has this open" dot -- see admin.js's
    renderTodayTab (the presence-viewer subscription) and teacher.js's
    trackTeacherPresence (what actually turns it on). Hidden by default;
@@ -1323,6 +1367,43 @@ h4 {
   border-radius: 6px;
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0 1rem;
+}
+
+/* Shown at the top of the attendance form (or its locked read-only view)
+   only when it was opened from the group picker above -- see teacher.js's
+   openGroupAttendance/renderAttendanceForm/renderAlreadySubmittedMessage.
+   A neutral gray box, not a warning: this is just orientation ("you're
+   looking at Group 1" plus the other group's current status), not
+   something wrong. */
+.group-context-banner {
+  font-size: 0.85rem;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.group-context-label {
+  font-weight: 600;
+  color: #374151;
+  margin: 0.25rem 0;
+}
+
+.group-context-other-status {
+  color: #6b7280;
+  margin: 0.15rem 0;
+}
+
+.back-to-groups-btn {
+  width: auto;
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-size: var(--font-label);
+  padding: 0.2rem 0;
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 /* "Edit Attendance" button on the locked "already submitted" view -- same
@@ -2095,6 +2176,110 @@ h4 {
 .delete-volunteer-entry-btn.confirm-armed {
   background: #ef4444;
   color: white;
+}
+
+/* --- Class Groups tab (src/admin.js's renderClassGroupsTab) ---------------
+   Lets an admin create/rename/delete groups for a class and assign
+   students into them -- see data_import/85_class_groups_generalized.sql.
+   Row shapes deliberately echo the Backfill panel's date-range/review-list
+   styling above rather than introducing a new visual language for what is,
+   structurally, the same "pick something, see a small editable list"
+   pattern. */
+.class-group-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  margin-bottom: 0.4rem;
+  background: white;
+}
+
+.class-group-name {
+  font-weight: 600;
+  color: #374151;
+}
+
+.class-group-row-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.class-group-rename-btn,
+.class-group-rename-save-btn,
+.class-group-rename-cancel-btn {
+  width: auto;
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.class-group-delete-btn {
+  width: auto;
+  background: white;
+  color: #ef4444;
+  border: 1px solid #ef4444;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.class-group-delete-btn.confirm-armed {
+  background: #ef4444;
+  color: white;
+}
+
+.class-group-rename-input {
+  flex: 1;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+.class-group-add-row {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.class-group-add-row input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+#class-group-add-btn {
+  width: auto;
+  background: #4f46e5;
+  color: white;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+  border-radius: 6px;
+}
+
+.class-group-student-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+.class-group-student-select {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+  min-width: 160px;
 }
 
 /* --- Volunteer Hours tab (src/teacher.js) -----------------------------------

@@ -115,7 +115,7 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
   // data_import/18_teacher_attendance.sql).
   const { data: links } = await supabase
     .from('class_teachers')
-    .select('classes(*, students(*), class_teachers(teacher_id, profiles(full_name)))')
+    .select('classes(*, students(*), class_teachers(teacher_id, profiles(full_name)), class_groups(id, name))')
     .eq('teacher_id', userId)
 
   const classes = (links || []).map(link => link.classes).filter(Boolean)
@@ -290,26 +290,50 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
         .map(ct => ct.teacher_id)
         .filter(id => id !== userId)
       const [{ data: existingStudentRecords }, { data: existingTeacherRecords }, { data: existingNote }, { data: availabilityRecords }] = await Promise.all([
-        supabase.from('attendance').select('id, student_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
+        // marked_by is only needed for a grouped class (see below), to show
+        // "submitted by <name>" per group -- harmless to always select it.
+        supabase.from('attendance').select('id, student_id, status, needs_rework, marked_by').eq('class_id', myClass.id).eq('date', today),
         supabase.from('teacher_attendance').select('id, teacher_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
         supabase.from('class_lesson_notes').select('note').eq('class_id', myClass.id).eq('date', today).maybeSingle(),
         coTeacherIds.length > 0
           ? supabase.from('teacher_availability').select('teacher_id, status').eq('session_date', today).in('teacher_id', coTeacherIds)
           : Promise.resolve({ data: [] })
       ])
-      const hasRecords = existingStudentRecords && existingStudentRecords.length > 0
-      const needsRework = hasRecords && existingStudentRecords.some(r => r.needs_rework)
       const unavailableTeacherIds = new Set(
         (availabilityRecords || []).filter(r => r.status === 'unavailable').map(r => r.teacher_id)
       )
-      renderAttendanceForm(myClass, today, userId, {
-        hasRecords,
-        needsRework,
+      const attendanceData = {
         studentRecords: existingStudentRecords || [],
         teacherRecords: existingTeacherRecords || [],
         existingNote: existingNote || null,
         unavailableTeacherIds
-      })
+      }
+      // A class with at least one group defined by an admin (see
+      // data_import/85_class_groups_generalized.sql's class_groups table
+      // and admin.js's Class Groups tab) shows a group picker first
+      // instead of jumping straight to one roster -- see
+      // renderGroupPicker's own doc comment for why (any teacher can take
+      // any group, on any day -- groups aren't owned by a specific
+      // teacher). Gated on the class actually HAVING a group defined,
+      // rather than on any student already being assigned to one, so a
+      // freshly created group still shows the picker immediately (with
+      // everyone in the "Ungrouped Students" card) rather than waiting
+      // until someone's been assigned. Every other class has zero
+      // class_groups rows and is completely unaffected: this takes the
+      // exact same path it always has.
+      const hasGroups = (myClass.class_groups || []).length > 0
+      if (hasGroups) {
+        renderGroupPicker(myClass, today, userId, attendanceData)
+      } else {
+        const hasRecords = attendanceData.studentRecords.length > 0
+        const needsRework = hasRecords && attendanceData.studentRecords.some(r => r.needs_rework)
+        renderAttendanceForm(myClass, today, userId, {
+          ...attendanceData,
+          hasRecords,
+          needsRework,
+          rosterStudents: myClass.students || []
+        })
+      }
       trackTeacherPresence(userId, myClass.id)
     } else if (activeTabName === 'logHours') {
       renderLogHoursTab(volunteerTeams, userId)
@@ -472,11 +496,18 @@ function renderNoClassMessage(myClass, today, session) {
  */
 function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existing) {
   const tabContent = document.getElementById('tab-content')
-  const { studentRecords, teacherRecords, unavailableTeacherIds } = existing
+  const {
+    studentRecords, teacherRecords, unavailableTeacherIds,
+    // See renderAttendanceForm's own doc comment for these -- only set
+    // when this view is for one group of a class with admin-defined groups
+    // (see renderGroupPicker/openGroupAttendance and
+    // data_import/85_class_groups_generalized.sql).
+    rosterStudents, groupKey, groupLabel, otherGroupsStatus, onBackToGroups
+  } = existing
   const unavailableIds = unavailableTeacherIds || new Set()
 
   const studentStatusById = new Map((studentRecords || []).map(r => [r.student_id, r.status]))
-  const sortedStudents = [...(myClass.students || [])]
+  const sortedStudents = [...(rosterStudents || myClass.students || [])]
     .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
   const presentCount = sortedStudents.filter(s => (studentStatusById.get(s.id) || 'present') === 'present').length
 
@@ -514,8 +545,17 @@ function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existin
     <div>${coTeacherSummaryRows}</div>
   ` : ''
 
+  const groupContextHtml = groupKey ? `
+    <div class="group-context-banner">
+      <button type="button" id="back-to-groups-btn" class="back-to-groups-btn">${TEACHER_MESSAGES.attendanceForm.groupPicker.backToGroupsLabel}</button>
+      <p class="group-context-label">${groupLabel}</p>
+      ${(otherGroupsStatus || []).map(g => `<p class="group-context-other-status">${g.label}: ${g.statusText}</p>`).join('')}
+    </div>
+  ` : ''
+
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
+    ${groupContextHtml}
     <p class="success">${TEACHER_MESSAGES.attendanceForm.alreadySubmitted}</p>
     ${sortedStudents.length > 0 ? `
       <h4>${TEACHER_MESSAGES.attendanceForm.submittedAttendanceHeading}</h4>
@@ -528,13 +568,20 @@ function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existin
   `
   renderLessonNoteDisplay(myClass, today, noteText, userId)
 
+  if (groupKey && onBackToGroups) {
+    document.getElementById('back-to-groups-btn').addEventListener('click', onBackToGroups)
+  }
+
   // Reopens the same form component used for a fresh submission or an
   // admin-triggered rework, just with isSelfEdit set instead of
   // needsRework -- see renderAttendanceForm for how those two differ (only
   // in notice text and audit-log wording; the actual save behavior, update
   // rows in place rather than insert, is identical for both). No re-fetch
   // needed: studentRecords/teacherRecords/noteText passed into this
-  // function are exactly what the form needs to prefill itself.
+  // function are exactly what the form needs to prefill itself. Group
+  // context (if any) is passed straight through too, so editing a group's
+  // attendance still shows that same group's "switch group"/other-status
+  // banner rather than losing it.
   document.getElementById('edit-attendance-btn').addEventListener('click', () => {
     renderAttendanceForm(myClass, today, userId, {
       hasRecords: true,
@@ -543,7 +590,8 @@ function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existin
       studentRecords: studentRecords || [],
       teacherRecords: teacherRecords || [],
       existingNote: noteText ? { note: noteText } : null,
-      unavailableTeacherIds: unavailableIds
+      unavailableTeacherIds: unavailableIds,
+      rosterStudents, groupKey, groupLabel, otherGroupsStatus, onBackToGroups
     })
   })
 }
@@ -683,6 +731,204 @@ export function buildLessonNoteBubbleHtml(noteText) {
 }
 
 /**
+ * Partitions a class's roster into its real, admin-defined groups (see
+ * data_import/85_class_groups_generalized.sql's class_groups table and
+ * admin.js's Class Groups tab), plus a trailing pseudo-group for anyone not
+ * yet assigned to one. Shared by renderGroupPicker, openGroupAttendance,
+ * and renderAttendanceForm's post-save refresh, so all three always agree
+ * on exactly the same split without re-deriving it differently in three
+ * places.
+ *
+ * Every real group is always included, even with zero students right now
+ * -- these are deliberate admin data (see admin.js's renderClassGroupsTab),
+ * not derived from who happens to be assigned, so a freshly created empty
+ * group still shows up rather than silently waiting for its first student.
+ * The "ungrouped" pseudo-group is the one exception -- it only appears
+ * when there's actually at least one student in it, since it's not a real
+ * group, just "not assigned to a real one yet".
+ *
+ * @param {Array} students
+ * @param {Array<{id: string, name: string}>} classGroups - This class's
+ *   own class_groups rows (myClass.class_groups).
+ * @returns {Array<{key: string, label: string, students: Array}>} `key` is
+ *   a real group's id, or the literal string 'ungrouped' for the
+ *   pseudo-group.
+ */
+function getGroupPartitions(students, classGroups) {
+  const namedGroups = (classGroups || []).map(g => ({
+    key: g.id,
+    label: g.name,
+    students: students.filter(s => s.class_group_id === g.id)
+  }))
+  const ungroupedStudents = students.filter(s => !s.class_group_id)
+  return ungroupedStudents.length > 0
+    ? [...namedGroups, { key: 'ungrouped', label: TEACHER_MESSAGES.attendanceForm.groupPicker.ungroupedLabel, students: ungroupedStudents }]
+    : namedGroups
+}
+
+/**
+ * Teacher id -> display name, for resolving an attendance row's marked_by
+ * into "submitted by <name>" wherever a group's status is shown. Built
+ * from this class's own co-teacher list (myClass.class_teachers, which
+ * already carries profiles.full_name from renderTeacherDashboard's initial
+ * query) rather than a fresh query -- every marked_by on this class's rows
+ * is necessarily one of its own assigned teachers (including an admin who
+ * submitted on a teacher's behalf, since admins are linked via
+ * class_teachers too -- see data_import/06_multi_teacher_classes.sql).
+ *
+ * @param {object} myClass
+ * @returns {Map<string, string|null>}
+ */
+function buildNameByTeacherId(myClass) {
+  return new Map((myClass.class_teachers || []).map(ct => [ct.teacher_id, toTitleCase(ct.profiles?.full_name) || null]))
+}
+
+/**
+ * Builds one group's read-only status -- not yet submitted, submitted (by
+ * whoever's marked_by resolves to), or sent back for rework -- from the
+ * class+date attendance rows already fetched for the WHOLE class, filtered
+ * down to just this group's student ids rather than re-querying per group.
+ * Shared by renderGroupPicker's cards, openGroupAttendance's "other group"
+ * banner, and renderAttendanceForm's post-save refresh of that same
+ * banner, so the wording and logic are identical everywhere a group's
+ * status shows up.
+ *
+ * @param {{key: string, label: string, students: Array}} groupDef
+ * @param {Array} studentRecords - This class+date's attendance rows
+ *   (unfiltered across the whole roster) -- `{student_id, status,
+ *   needs_rework, marked_by}`.
+ * @param {Map<string, string|null>} nameByTeacherId
+ * @returns {{key: string, label: string, statusText: string, hasRecords: boolean, needsRework: boolean}}
+ */
+function buildGroupStatus(groupDef, studentRecords, nameByTeacherId) {
+  const ids = new Set(groupDef.students.map(s => s.id))
+  const records = (studentRecords || []).filter(r => ids.has(r.student_id))
+  const hasRecords = records.length > 0
+  const needsRework = hasRecords && records.some(r => r.needs_rework)
+  const statusText = needsRework
+    ? TEACHER_MESSAGES.attendanceForm.groupPicker.statusNeedsRework
+    : hasRecords
+      ? TEACHER_MESSAGES.attendanceForm.groupPicker.statusSubmitted(nameByTeacherId.get(records[0].marked_by) || null)
+      : TEACHER_MESSAGES.attendanceForm.groupPicker.statusNotSubmitted
+  return {
+    key: groupDef.key,
+    label: groupDef.label,
+    statusText,
+    hasRecords,
+    needsRework
+  }
+}
+
+/**
+ * Shown instead of jumping straight to a single roster, for a class that
+ * has at least one admin-defined group (see
+ * data_import/85_class_groups_generalized.sql's class_groups table and
+ * admin.js's Class Groups tab). Any teacher assigned to the class can take
+ * attendance for any group on a given day -- groups aren't tied to a
+ * specific teacher, they're just a roster split an admin created -- so
+ * this always asks which one instead of assuming a fixed teacher-to-group
+ * mapping. Each group's submission status is shown right on its card,
+ * read-only, so whoever's here can see at a glance whether the whole class
+ * is covered without needing to open another group's screen.
+ *
+ * A student who hasn't been assigned to any real group yet
+ * (students.class_group_id is null) is NOT hidden and NOT silently
+ * skipped: they get their own "Ungrouped Students" card, with completely
+ * normal attendance toggles once opened -- just visually flagged as
+ * needing a real group assignment from the admin's Class Groups tab. Every
+ * real group plus this pseudo-group (via getGroupPartitions) is always a
+ * strict partition of the roster -- every student is in exactly one -- so
+ * there's no possibility of the same student's attendance being submitted
+ * twice from two different cards.
+ *
+ * @param {object} myClass
+ * @param {string} today - 'YYYY-MM-DD'
+ * @param {string} userId
+ * @param {object} existing - Same studentRecords/teacherRecords/
+ *   existingNote/unavailableTeacherIds fetched once for the whole
+ *   class+date in renderActiveTab -- this function only partitions
+ *   studentRecords per group, it never re-fetches.
+ */
+function renderGroupPicker(myClass, today, userId, existing) {
+  const tabContent = document.getElementById('tab-content')
+  const { studentRecords } = existing
+
+  const groupDefs = getGroupPartitions(myClass.students || [], myClass.class_groups || [])
+  const nameByTeacherId = buildNameByTeacherId(myClass)
+
+  const cardsHtml = groupDefs
+    .map(g => {
+      const status = buildGroupStatus(g, studentRecords, nameByTeacherId)
+      const cardStateClass = status.needsRework ? 'needs-rework' : status.hasRecords ? 'submitted' : 'waiting'
+      return `
+      <div class="status-card ${cardStateClass}">
+        <strong>${status.label}</strong>
+        <p class="group-picker-count">${TEACHER_MESSAGES.attendanceForm.groupPicker.studentCount(g.students.length)}</p>
+        ${g.key === 'ungrouped' ? `<p class="group-picker-ungrouped-hint">${TEACHER_MESSAGES.attendanceForm.groupPicker.ungroupedCardHint(g.students.length)}</p>` : ''}
+        <span class="status-badge">${status.statusText}</span>
+        <button type="button" class="group-picker-open-btn" data-group-key="${g.key}">${TEACHER_MESSAGES.attendanceForm.groupPicker.openButtonLabel}</button>
+      </div>
+    `
+    })
+    .join('')
+
+  tabContent.innerHTML = `
+    <h3>${myClass.name} — ${today}</h3>
+    <p class="drag-hint">${TEACHER_MESSAGES.attendanceForm.groupPicker.hint}</p>
+    <div class="status-grid group-picker-list">${cardsHtml}</div>
+  `
+
+  tabContent.querySelectorAll('.group-picker-open-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const group = groupDefs.find(g => g.key === btn.dataset.groupKey)
+      openGroupAttendance(myClass, today, userId, existing, group)
+    })
+  })
+}
+
+/**
+ * Shared by every "open this group's attendance" click from
+ * renderGroupPicker: computes this specific group's hasRecords/needsRework
+ * from the full class+date studentRecords already fetched (no re-fetch),
+ * builds the other group(s)' read-only status for the cross-group
+ * context banner, and hands off to the normal renderAttendanceForm exactly
+ * as a non-grouped class would use it -- grouping only ever changes WHICH
+ * roster/records that form sees, never how it works once a group is
+ * picked.
+ *
+ * @param {object} myClass
+ * @param {string} today
+ * @param {string} userId
+ * @param {object} existing - Full class+date existing data, as passed into
+ *   renderGroupPicker.
+ * @param {{key: string, label: string, students: Array}} group - The group being opened.
+ */
+function openGroupAttendance(myClass, today, userId, existing, group) {
+  const { studentRecords } = existing
+  const groupIds = new Set(group.students.map(s => s.id))
+  const groupRecords = (studentRecords || []).filter(r => groupIds.has(r.student_id))
+  const hasRecords = groupRecords.length > 0
+  const needsRework = hasRecords && groupRecords.some(r => r.needs_rework)
+
+  const nameByTeacherId = buildNameByTeacherId(myClass)
+  const otherGroupsStatus = getGroupPartitions(myClass.students || [], myClass.class_groups || [])
+    .filter(g => g.key !== group.key)
+    .map(g => buildGroupStatus(g, studentRecords, nameByTeacherId))
+
+  renderAttendanceForm(myClass, today, userId, {
+    ...existing,
+    hasRecords,
+    needsRework,
+    studentRecords: groupRecords,
+    rosterStudents: group.students,
+    groupKey: group.key,
+    groupLabel: group.label,
+    otherGroupsStatus,
+    onBackToGroups: () => renderGroupPicker(myClass, today, userId, existing)
+  })
+}
+
+/**
  * Render the "Take Attendance" tab: a Present/Absent toggle per student,
  * a Present/Absent toggle per co-teacher (if any), and a submit button
  * that batch-inserts today's student attendance AND teacher attendance
@@ -745,7 +991,16 @@ export function buildLessonNoteBubbleHtml(noteText) {
  */
 function renderAttendanceForm(myClass, today, userId, existing) {
   const tabContent = document.getElementById('tab-content')
-  const { hasRecords, needsRework, isSelfEdit, studentRecords, teacherRecords, existingNote, unavailableTeacherIds } = existing
+  const {
+    hasRecords, needsRework, isSelfEdit, studentRecords, teacherRecords, existingNote, unavailableTeacherIds,
+    // Only set when this form was opened from renderGroupPicker/
+    // openGroupAttendance (a class with at least one admin-defined group --
+    // see that function's own doc comment). rosterStudents is which
+    // students to actually show; falls back to the whole class below when
+    // this class isn't grouped at all, so every existing (non-grouped)
+    // call site is unaffected.
+    rosterStudents, groupKey, groupLabel, otherGroupsStatus, onBackToGroups
+  } = existing
   const unavailableIds = unavailableTeacherIds || new Set()
 
   // Block duplicate submissions for the same day -- but only when nothing's
@@ -753,7 +1008,10 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   // flagged (or self-edit-requested) submission falls through to the form
   // below instead, pre-filled rather than blank.
   if (hasRecords && !needsRework && !isSelfEdit) {
-    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId, { studentRecords, teacherRecords, unavailableTeacherIds: unavailableIds })
+    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId, {
+      studentRecords, teacherRecords, unavailableTeacherIds: unavailableIds,
+      rosterStudents, groupKey, groupLabel, otherGroupsStatus, onBackToGroups
+    })
     return
   }
 
@@ -768,7 +1026,7 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   // than whatever order the query happens to return), defaulting to
   // "Present" unless reworking an existing submission, in which case it
   // defaults to whatever was actually submitted.
-  const sortedStudents = [...(myClass.students || [])]
+  const sortedStudents = [...(rosterStudents || myClass.students || [])]
     .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
   const studentRows = sortedStudents
     .map((s, i) => {
@@ -822,6 +1080,20 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   // two independent checks rather than an if/else chain so a future case
   // that's neither still falls through to the plain (fresh submission)
   // wording without needing to touch this.
+  // Shown only when this form was opened from the group picker (see
+  // openGroupAttendance above) -- a "switch group" link back to the
+  // picker, plus a read-only line for every OTHER group's current status,
+  // so whoever's filling this in can tell at a glance whether the rest of
+  // the class still needs doing without leaving this screen. Absent
+  // entirely for a non-grouped class, same as before this feature existed.
+  const groupContextHtml = groupKey ? `
+    <div class="group-context-banner">
+      <button type="button" id="back-to-groups-btn" class="back-to-groups-btn">${TEACHER_MESSAGES.attendanceForm.groupPicker.backToGroupsLabel}</button>
+      <p class="group-context-label">${groupLabel}</p>
+      ${(otherGroupsStatus || []).map(g => `<p class="group-context-other-status">${g.label}: ${g.statusText}</p>`).join('')}
+    </div>
+  ` : ''
+
   const reworkNoticeHtml = needsRework ? `<p class="rework-notice">${TEACHER_MESSAGES.attendanceForm.reworkNotice}</p>` : ''
   const selfEditNoticeHtml = isSelfEdit ? `<p class="self-edit-notice">${TEACHER_MESSAGES.attendanceForm.selfEditNotice}</p>` : ''
   const submitLabel = needsRework
@@ -865,6 +1137,7 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   // Render the form layout
   tabContent.innerHTML = `
     <h3>${myClass.name} — ${today}</h3>
+    ${groupContextHtml}
     ${reworkNoticeHtml}
     ${selfEditNoticeHtml}
     <div id="student-list">${studentRows || `<p>${TEACHER_MESSAGES.attendanceForm.noStudentsInClass}</p>`}</div>
@@ -874,6 +1147,10 @@ function renderAttendanceForm(myClass, today, userId, existing) {
     <button id="submit-attendance"${hasAnyoneToMark ? '' : ' disabled'}>${submitLabel}</button>
     <p id="submit-message" class="hidden"></p>
   `
+
+  if (groupKey && onBackToGroups) {
+    document.getElementById('back-to-groups-btn').addEventListener('click', onBackToGroups)
+  }
 
   // Recomputes the "X of Y present" line from whatever's actually toggled
   // active in #student-list right now -- scoped to that container
@@ -939,7 +1216,6 @@ function renderAttendanceForm(myClass, today, userId, existing) {
   document.getElementById('submit-attendance').addEventListener('click', async () => {
     submitBtn.disabled = true
     const noteText = noteTextarea.value.trim()
-    let writes
 
     // Counted once up front (not branch-specific) for the audit summary
     // below -- the DOM's current toggle state is the same regardless of
@@ -963,16 +1239,20 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       { onConflict: 'class_id,date' }
     )
 
-    // Both an admin-triggered rework and a teacher-initiated self-edit
-    // (see renderAlreadySubmittedMessage's "Edit Attendance" button and
-    // data_import/56_teachers_self_edit_attendance.sql) update the
-    // existing rows in place rather than inserting new ones -- the row IS
-    // the original submission, just corrected, either way.
+    // STUDENT writes: an admin-triggered rework and a teacher-initiated
+    // self-edit (see renderAlreadySubmittedMessage's "Edit Attendance"
+    // button and data_import/56_teachers_self_edit_attendance.sql) update
+    // the existing rows in place rather than inserting new ones -- the row
+    // IS the original submission, just corrected, either way. A fresh
+    // submission for THIS roster (this group, or the whole class on a
+    // non-grouped class) batch-inserts instead. Scoped to whatever's
+    // actually in #student-list, which is already just this form's
+    // rosterStudents (see sortedStudents above) -- a grouped class's OTHER
+    // group is never touched by this, whichever branch runs.
     const isEditingExisting = needsRework || isSelfEdit
+    let studentWrites
     if (isEditingExisting) {
       const studentRecordIdByStudentId = new Map(studentRecords.map(r => [r.student_id, r.id]))
-      const teacherRecordIdByTeacherId = new Map(teacherRecords.map(r => [r.teacher_id, r.id]))
-
       // A student with no existing row for this date -- newly on the
       // roster since the original submission, rather than someone whose
       // status is being corrected -- has no id to update. `.eq('id',
@@ -980,7 +1260,7 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       // used to silently do nothing for them while still reporting
       // success. Insert a fresh row instead whenever there's no existing
       // one to update.
-      const studentUpdates = [...tabContent.querySelectorAll('.student-row')].map(row => {
+      studentWrites = [...tabContent.querySelectorAll('.student-row')].map(row => {
         const activeBtn = row.querySelector('.toggle-btn.active')
         const status = activeBtn ? activeBtn.dataset.status : 'present'
         const studentId = row.dataset.studentId
@@ -989,64 +1269,56 @@ function renderAttendanceForm(myClass, today, userId, existing) {
           ? supabase.from('attendance').update({ status, needs_rework: false }).eq('id', recordId)
           : supabase.from('attendance').insert({ student_id: studentId, class_id: myClass.id, date: today, status, marked_by: userId })
       })
-
-      // The signed-in teacher's own row is reset to present + unflagged
-      // too (submitting is itself proof they were there, same as a fresh
-      // submission), plus one write per co-teacher row from whatever its
-      // toggle is currently set to. Either row might not exist if the
-      // original submission predates a co-teacher being added to the
-      // class -- inserted fresh in that case, same reasoning as students
-      // above, rather than silently skipped.
-      const teacherUpdates = []
-      const ownRecordId = teacherRecordIdByTeacherId.get(userId)
-      teacherUpdates.push(
-        ownRecordId
-          ? supabase.from('teacher_attendance').update({ status: 'present', needs_rework: false }).eq('id', ownRecordId)
-          : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: userId, date: today, status: 'present', marked_by: userId })
-      )
-      tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
-        const activeBtn = row.querySelector('.toggle-btn.active')
-        const status = activeBtn ? activeBtn.dataset.status : 'present'
-        const teacherId = row.dataset.teacherId
-        const recordId = teacherRecordIdByTeacherId.get(teacherId)
-        teacherUpdates.push(
-          recordId
-            ? supabase.from('teacher_attendance').update({ status, needs_rework: false }).eq('id', recordId)
-            : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: teacherId, date: today, status, marked_by: userId })
-        )
-      })
-
-      writes = Promise.all([...studentUpdates, ...teacherUpdates, noteWrite])
     } else {
-      // Fresh submission: batch-insert one row per student plus one per
-      // teacher, same as always.
       const records = [...tabContent.querySelectorAll('.student-row')].map(row => {
         const activeBtn = row.querySelector('.toggle-btn.active')
         const status = activeBtn ? activeBtn.dataset.status : 'present'
         return { student_id: row.dataset.studentId, class_id: myClass.id, date: today, status, marked_by: userId }
       })
-
-      // Teacher attendance: the signed-in teacher is always recorded
-      // present (they're the one submitting right now), plus one row per
-      // co-teacher from whatever their toggle is currently set to.
-      const teacherRecordsToInsert = [
-        { class_id: myClass.id, teacher_id: userId, date: today, status: 'present', marked_by: userId }
-      ]
-      tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
-        const activeBtn = row.querySelector('.toggle-btn.active')
-        const status = activeBtn ? activeBtn.dataset.status : 'present'
-        teacherRecordsToInsert.push({ class_id: myClass.id, teacher_id: row.dataset.teacherId, date: today, status, marked_by: userId })
-      })
-
-      // All three writes are independent tables -- run them together rather
-      // than one-then-the-other, so a slow network doesn't make this feel
-      // like several separate submits.
-      writes = Promise.all([
-        supabase.from('attendance').insert(records),
-        supabase.from('teacher_attendance').insert(teacherRecordsToInsert),
-        noteWrite
-      ])
+      studentWrites = [supabase.from('attendance').insert(records)]
     }
+
+    // TEACHER writes: ALWAYS update-in-place when a row already exists,
+    // insert only when it doesn't -- regardless of isEditingExisting.
+    // teacher_attendance is keyed by (class_id, teacher_id, date), never by
+    // student group, so on a grouped class a co-teacher's row for today
+    // may already exist from whoever submitted the OTHER group earlier
+    // (or from this same teacher having already submitted once and coming
+    // back to do the other group too) -- looked up here from
+    // teacherRecords, which renderActiveTab always fetches for the whole
+    // class+date, never scoped to one roster. On a non-grouped class
+    // teacherRecords is always empty on a genuinely first submission
+    // anyway, so this collapses to exactly the same inserts as before --
+    // this is a behavior-preserving generalization of the old
+    // isEditingExisting-only teacher-update logic, not a special case
+    // added just for grouped classes. Without this, the second group to
+    // submit on a given day would hit teacher_attendance's (class_id,
+    // teacher_id, date) unique constraint trying to insert a row that
+    // already exists.
+    const teacherRecordIdByTeacherId = new Map(teacherRecords.map(r => [r.teacher_id, r.id]))
+    const teacherWrites = []
+    const ownRecordId = teacherRecordIdByTeacherId.get(userId)
+    teacherWrites.push(
+      ownRecordId
+        ? supabase.from('teacher_attendance').update({ status: 'present', needs_rework: false }).eq('id', ownRecordId)
+        : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: userId, date: today, status: 'present', marked_by: userId })
+    )
+    tabContent.querySelectorAll('.co-teacher-row').forEach(row => {
+      const activeBtn = row.querySelector('.toggle-btn.active')
+      const status = activeBtn ? activeBtn.dataset.status : 'present'
+      const teacherId = row.dataset.teacherId
+      const recordId = teacherRecordIdByTeacherId.get(teacherId)
+      teacherWrites.push(
+        recordId
+          ? supabase.from('teacher_attendance').update({ status, needs_rework: false }).eq('id', recordId)
+          : supabase.from('teacher_attendance').insert({ class_id: myClass.id, teacher_id: teacherId, date: today, status, marked_by: userId })
+      )
+    })
+
+    // All writes are independent tables -- run them together rather than
+    // one-then-the-other, so a slow network doesn't make this feel like
+    // several separate submits.
+    const writes = Promise.all([...studentWrites, ...teacherWrites, noteWrite])
 
     const results = await writes
     const firstError = results.find(r => r.error)?.error
@@ -1096,13 +1368,23 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       // matching nothing. One extra pair of queries, right after a save --
       // not on every render.
       const [{ data: freshStudentRecords }, { data: freshTeacherRecords }] = await Promise.all([
-        supabase.from('attendance').select('id, student_id, status').eq('class_id', myClass.id).eq('date', today),
+        supabase.from('attendance').select('id, student_id, status, needs_rework, marked_by').eq('class_id', myClass.id).eq('date', today),
         supabase.from('teacher_attendance').select('id, teacher_id, status').eq('class_id', myClass.id).eq('date', today)
       ])
+      // The other group's status may have just changed underneath this one
+      // (e.g. this teacher submitted Group 1 a minute ago and just now
+      // finished Group 2) -- rebuilt fresh from the same query rather than
+      // reusing whatever otherGroupsStatus this render started with.
+      const freshOtherGroupsStatus = groupKey
+        ? getGroupPartitions(myClass.students || [], myClass.class_groups || [])
+            .filter(g => g.key !== groupKey)
+            .map(g => buildGroupStatus(g, freshStudentRecords, buildNameByTeacherId(myClass)))
+        : otherGroupsStatus
       renderAlreadySubmittedMessage(myClass, today, noteText, userId, {
         studentRecords: freshStudentRecords || [],
         teacherRecords: freshTeacherRecords || [],
-        unavailableTeacherIds: unavailableIds
+        unavailableTeacherIds: unavailableIds,
+        rosterStudents, groupKey, groupLabel, otherGroupsStatus: freshOtherGroupsStatus, onBackToGroups
       })
     }
   })

@@ -22,6 +22,13 @@
  *    accepts or overrides those submissions (same shape as the Today
  *    tab's review modal), plus totals by student and a day-by-day
  *    activity log of what's been accepted.
+ *  - Class Groups: split any class into admin-defined groups (e.g.
+ *    Bhajan's "Group 1"/"Group 2") and assign students into them -- see
+ *    data_import/85_class_groups_generalized.sql. A class with no groups
+ *    is completely unaffected everywhere else in the app; one that has at
+ *    least one group shows a group picker on the teacher's own Take
+ *    Attendance tab instead of a single roster (see teacher.js's
+ *    renderGroupPicker), tracking each group's submission independently.
  *  - Calendar: manage the class_sessions schedule (which dates are
  *    regular classes, holidays, or special events).
  *  - Teacher Availability: read-only view, for a single selected date, of
@@ -59,6 +66,7 @@ const ADMIN_TABS = [
   { key: 'students', label: 'Students' },
   { key: 'records', label: 'Records' },
   { key: 'volunteer', label: 'Volunteer Hours' },
+  { key: 'groups', label: 'Class Groups' },
   { key: 'calendar', label: 'Calendar' },
   { key: 'availability', label: 'Teacher Availability' },
   { key: 'activity', label: 'Activity' }
@@ -102,6 +110,7 @@ export async function renderAdminDashboard(container, userId) {
     else if (tabName === 'students') renderStudentsTab(userId)
     else if (tabName === 'records') renderRecordsTab(userId)
     else if (tabName === 'volunteer') renderVolunteerHoursTab(userId)
+    else if (tabName === 'groups') renderClassGroupsTab(userId)
     else if (tabName === 'today') renderTodayTab(userId)
     else if (tabName === 'calendar') renderCalendarTab(userId)
     else if (tabName === 'availability') renderTeacherAvailabilityTab()
@@ -894,6 +903,316 @@ function wireBackfillModalSave(panel, classId, className, date, userId) {
     }
 
     setTimeout(closeBackfillModal, 1200)
+  })
+}
+
+/**
+ * "Class Groups" tab: lets an admin split any class into any number of
+ * named groups (see data_import/85_class_groups_generalized.sql's
+ * class_groups table, which replaced file 84's narrow, Bhajan-only,
+ * hardcoded-to-two-values students.attendance_group column) and assign
+ * students into them. A class with no groups defined here is completely
+ * unaffected everywhere else in the app -- students.class_group_id being
+ * null for its whole roster is exactly the same as before this feature
+ * existed. Once a class has at least one group, its assigned teacher(s)
+ * see a group picker instead of one shared roster on the Take Attendance
+ * tab (see teacher.js's renderGroupPicker), and each group's submission is
+ * tracked independently.
+ *
+ * Deliberately picks a class first rather than showing every class's
+ * groups at once -- most classes will never have any, so a flat list of
+ * every class up front would mostly be empty noise.
+ *
+ * @param {string} userId - Signed-in admin's id, attributed on every
+ *   group create/rename/delete and student (re)assignment via audit.js.
+ */
+async function renderClassGroupsTab(userId) {
+  const tabContent = document.getElementById('tab-content')
+
+  // Same grade-order-first sort as the Backfill panel's class dropdown
+  // (see wireBackfillPanel) -- Gita/Bhajan/volunteer teams land after
+  // every grade rather than wherever alphabetical order happens to put
+  // them.
+  const { data: classes } = await supabase.from('classes').select('id, name').order('name')
+  const sortedClasses = [...(classes || [])].sort((a, b) => {
+    const rankA = GRADE_ORDER.indexOf(a.name)
+    const rankB = GRADE_ORDER.indexOf(b.name)
+    const orderA = rankA === -1 ? GRADE_ORDER.length : rankA
+    const orderB = rankB === -1 ? GRADE_ORDER.length : rankB
+    if (orderA !== orderB) return orderA - orderB
+    return a.name.localeCompare(b.name)
+  })
+
+  tabContent.innerHTML = `
+    <p class="drag-hint">${ADMIN_MESSAGES.classGroups.hint}</p>
+    <div class="date-range">
+      <label>${ADMIN_MESSAGES.classGroups.classLabel}:
+        <select id="class-groups-select">
+          <option value="">${ADMIN_MESSAGES.classGroups.classPlaceholder}</option>
+          ${sortedClasses.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <div id="class-groups-detail"></div>
+  `
+
+  document.getElementById('class-groups-select').addEventListener('change', (e) => {
+    const classId = e.target.value
+    const detail = document.getElementById('class-groups-detail')
+    if (!classId) {
+      detail.innerHTML = ''
+      return
+    }
+    const className = e.target.options[e.target.selectedIndex].text
+    loadClassGroupsDetail(classId, className, userId)
+  })
+}
+
+/**
+ * Fetches and renders one class's groups (with rename/delete) plus its
+ * full student roster (with a per-student group dropdown) into
+ * #class-groups-detail -- the only content that changes when the class
+ * dropdown above it changes, or after any create/rename/delete/reassign
+ * below succeeds (each of those calls this again rather than patching the
+ * DOM piecemeal, since a group's own list and every dropdown's option list
+ * both need to stay in sync with each other).
+ *
+ * @param {string} classId
+ * @param {string} className
+ * @param {string} userId
+ */
+async function loadClassGroupsDetail(classId, className, userId) {
+  const detail = document.getElementById('class-groups-detail')
+  detail.innerHTML = `<p>${ADMIN_MESSAGES.records.backfill.loadingRoster}</p>`
+
+  let groups, students
+  try {
+    // Optional classes (Gita/Bhajan) get their roster from
+    // students.optional_class rather than students.class_id -- same
+    // lookup teacher.js's renderTeacherDashboard and admin.js's
+    // openBackfillModal both already use (see OPTIONAL_CLASS_CODE_BY_NAME's
+    // own doc comment in format.js).
+    const optionalCode = OPTIONAL_CLASS_CODE_BY_NAME[className]
+    const [groupsRes, studentsRes] = await Promise.all([
+      supabase.from('class_groups').select('id, name').eq('class_id', classId).order('name'),
+      optionalCode
+        ? supabase.from('students').select('id, full_name, class_group_id').eq('optional_class', optionalCode)
+        : supabase.from('students').select('id, full_name, class_group_id').eq('class_id', classId)
+    ])
+    if (groupsRes.error || studentsRes.error) throw (groupsRes.error || studentsRes.error)
+    groups = groupsRes.data || []
+    students = studentsRes.data || []
+  } catch (err) {
+    detail.innerHTML = `<p class="error">${ADMIN_MESSAGES.classGroups.loadError(err)}</p>`
+    return
+  }
+
+  const groupOptionsHtml = (selectedId) => `
+    <option value=""${!selectedId ? ' selected' : ''}>${ADMIN_MESSAGES.classGroups.ungroupedOption}</option>
+    ${groups.map(g => `<option value="${g.id}"${g.id === selectedId ? ' selected' : ''}>${escapeHtml(g.name)}</option>`).join('')}
+  `
+
+  const groupRowsHtml = groups.map(g => `
+    <div class="class-group-row" data-group-id="${g.id}">
+      <span class="class-group-name">${escapeHtml(g.name)}</span>
+      <div class="class-group-row-actions">
+        <button type="button" class="class-group-rename-btn">${ADMIN_MESSAGES.classGroups.renameButton}</button>
+        <button type="button" class="class-group-delete-btn">${ADMIN_MESSAGES.classGroups.deleteButton}</button>
+      </div>
+    </div>
+  `).join('')
+
+  const studentRowsHtml = [...students]
+    .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+    .map(s => `
+      <div class="class-group-student-row" data-student-id="${s.id}">
+        <span>${toTitleCase(s.full_name)}</span>
+        <select class="class-group-student-select">${groupOptionsHtml(s.class_group_id)}</select>
+      </div>
+    `).join('')
+
+  detail.innerHTML = `
+    <h4>${className} — ${ADMIN_MESSAGES.classGroups.groupsHeading}</h4>
+    <div id="class-group-list">${groupRowsHtml || `<p>${ADMIN_MESSAGES.classGroups.noGroupsYet}</p>`}</div>
+    <div class="class-group-add-row">
+      <input type="text" id="class-group-add-input" placeholder="${ADMIN_MESSAGES.classGroups.addGroupPlaceholder}" />
+      <button type="button" id="class-group-add-btn">${ADMIN_MESSAGES.classGroups.addGroupButton}</button>
+    </div>
+    <p id="class-group-message" class="hidden"></p>
+    ${students.length > 0 ? `
+      <h4>${ADMIN_MESSAGES.classGroups.rosterHeading}</h4>
+      <p class="drag-hint">${ADMIN_MESSAGES.classGroups.rosterHint}</p>
+      <div id="class-group-roster">${studentRowsHtml}</div>
+    ` : `<p>${ADMIN_MESSAGES.classGroups.noStudentsInClass}</p>`}
+  `
+
+  wireClassGroupsDetail(detail, classId, className, userId)
+}
+
+/**
+ * Wires everything loadClassGroupsDetail just rendered: add/rename/delete
+ * on the groups list, and the per-student group dropdown. Every write
+ * here re-fetches and re-renders the whole detail panel via
+ * loadClassGroupsDetail on success, rather than patching the DOM in
+ * place -- a class's group list is short enough (a handful of groups at
+ * most) that this stays cheap, and it guarantees every dropdown's option
+ * list is always exactly in sync with the group list above it, including
+ * right after a group was just added, renamed, or deleted.
+ *
+ * @param {HTMLElement} detail - The #class-groups-detail element.
+ * @param {string} classId
+ * @param {string} className
+ * @param {string} userId
+ */
+function wireClassGroupsDetail(detail, classId, className, userId) {
+  const msg = detail.querySelector('#class-group-message')
+  const showMsg = (text, kind) => {
+    if (!msg) return
+    msg.textContent = text
+    msg.className = kind
+    msg.classList.remove('hidden')
+  }
+
+  // --- Add a group -----------------------------------------------------
+  const addBtn = detail.querySelector('#class-group-add-btn')
+  const addInput = detail.querySelector('#class-group-add-input')
+  addBtn?.addEventListener('click', async () => {
+    const name = addInput.value.trim()
+    if (!name) {
+      showMsg(ADMIN_MESSAGES.classGroups.addGroupNameRequired, 'error')
+      return
+    }
+    addBtn.disabled = true
+    const { error } = await supabase.from('class_groups').insert({ class_id: classId, name })
+    addBtn.disabled = false
+    if (error) {
+      // Postgres' unique_violation code, from this table's unique(class_id,
+      // name) constraint (see data_import/85_class_groups_generalized.sql)
+      // -- a friendlier message than the raw constraint-violation text.
+      showMsg(error.code === '23505' ? ADMIN_MESSAGES.classGroups.addGroupDuplicate : ADMIN_MESSAGES.classGroups.addGroupError(error), 'error')
+      return
+    }
+    showToast(ADMIN_MESSAGES.classGroups.groupAdded(name))
+    logAudit(
+      userId, 'admin', 'class_group.created', 'class_groups', classId,
+      `Added group "${name}" to ${className}`,
+      { class_id: classId, name }
+    )
+    loadClassGroupsDetail(classId, className, userId)
+  })
+
+  // --- Rename a group ----------------------------------------------------
+  detail.querySelectorAll('.class-group-rename-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.class-group-row')
+      const groupId = row.dataset.groupId
+      const nameSpan = row.querySelector('.class-group-name')
+      const currentName = nameSpan.textContent
+      row.querySelector('.class-group-row-actions').innerHTML = ''
+      nameSpan.outerHTML = `
+        <input type="text" class="class-group-rename-input" value="${escapeHtml(currentName)}" />
+        <button type="button" class="class-group-rename-save-btn">${ADMIN_MESSAGES.classGroups.renameSaveButton}</button>
+        <button type="button" class="class-group-rename-cancel-btn">${ADMIN_MESSAGES.classGroups.renameCancelButton}</button>
+      `
+      row.querySelector('.class-group-rename-cancel-btn').addEventListener('click', () => {
+        loadClassGroupsDetail(classId, className, userId)
+      })
+      row.querySelector('.class-group-rename-save-btn').addEventListener('click', async () => {
+        const newName = row.querySelector('.class-group-rename-input').value.trim()
+        if (!newName) {
+          showMsg(ADMIN_MESSAGES.classGroups.renameNameRequired, 'error')
+          return
+        }
+        const { error } = await supabase.from('class_groups').update({ name: newName }).eq('id', groupId)
+        if (error) {
+          showMsg(error.code === '23505' ? ADMIN_MESSAGES.classGroups.addGroupDuplicate : ADMIN_MESSAGES.classGroups.renameError(error), 'error')
+          return
+        }
+        showToast(ADMIN_MESSAGES.classGroups.renamed)
+        logAudit(
+          userId, 'admin', 'class_group.renamed', 'class_groups', classId,
+          `Renamed a ${className} group "${currentName}" -> "${newName}"`,
+          { class_id: classId, group_id: groupId, old_name: currentName, new_name: newName }
+        )
+        loadClassGroupsDetail(classId, className, userId)
+      })
+    })
+  })
+
+  // --- Delete a group ------------------------------------------------
+  // Two-click confirm instead of a native confirm() dialog -- same pattern
+  // as the Today tab's "Reject for rework" button (see
+  // openClassReviewModal's own doc comment): first click arms it, second
+  // actually deletes, so a stray single click can't remove a group by
+  // accident. Deleting a group never deletes its students -- the
+  // class_group_id foreign key is ON DELETE SET NULL (see
+  // data_import/85_class_groups_generalized.sql), so they're simply
+  // ungrouped again, same as before that group ever existed.
+  detail.querySelectorAll('.class-group-delete-btn').forEach(btn => {
+    let armed = false
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.class-group-row')
+      const groupId = row.dataset.groupId
+      const groupName = row.querySelector('.class-group-name').textContent
+      if (!armed) {
+        armed = true
+        btn.textContent = ADMIN_MESSAGES.classGroups.deleteConfirmButton
+        btn.classList.add('confirm-armed')
+        return
+      }
+      btn.disabled = true
+      const { error } = await supabase.from('class_groups').delete().eq('id', groupId)
+      if (error) {
+        showMsg(ADMIN_MESSAGES.classGroups.deleteError(error), 'error')
+        btn.disabled = false
+        armed = false
+        btn.textContent = ADMIN_MESSAGES.classGroups.deleteButton
+        btn.classList.remove('confirm-armed')
+        return
+      }
+      showToast(ADMIN_MESSAGES.classGroups.deleted(groupName))
+      logAudit(
+        userId, 'admin', 'class_group.deleted', 'class_groups', classId,
+        `Deleted group "${groupName}" from ${className}`,
+        { class_id: classId, group_id: groupId, name: groupName }
+      )
+      loadClassGroupsDetail(classId, className, userId)
+    })
+  })
+
+  // --- Assign a student to a group ------------------------------------
+  // Saves immediately on change, same "no separate submit step" pattern as
+  // the teacher Calendar tab's Available/Unavailable toggle -- optimistic
+  // isn't needed here since a <select> already shows its own new value the
+  // instant it's changed; only a failure needs to revert it, back to
+  // whatever this row's original selection was.
+  detail.querySelectorAll('.class-group-student-select').forEach(select => {
+    const originalValue = select.value
+    select.addEventListener('change', async () => {
+      const row = select.closest('.class-group-student-row')
+      const studentId = row.dataset.studentId
+      const studentName = row.querySelector('span').textContent
+      const newGroupId = select.value || null
+      select.disabled = true
+      const { error } = await supabase.from('students').update({ class_group_id: newGroupId }).eq('id', studentId)
+      select.disabled = false
+      if (error) {
+        showMsg(ADMIN_MESSAGES.classGroups.assignmentError(error), 'error')
+        select.value = originalValue
+        return
+      }
+      showToast(ADMIN_MESSAGES.classGroups.assignmentSaved)
+      // Read the chosen option's own text rather than looking the id back
+      // up in a `groups` array -- this function doesn't have that array in
+      // scope, and the visible option text is exactly the name that was
+      // just picked either way.
+      const newGroupName = select.options[select.selectedIndex].text
+      logAudit(
+        userId, 'admin', 'class_group.student_assigned', 'students', studentId,
+        `Assigned ${toTitleCase(studentName)} to ${newGroupName} in ${className}`,
+        { class_id: classId, student_id: studentId, class_group_id: newGroupId }
+      )
+    })
   })
 }
 

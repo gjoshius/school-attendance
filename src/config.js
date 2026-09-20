@@ -345,6 +345,47 @@ export const ADMIN_MESSAGES = {
     statusUnavailable: 'Unavailable',
     couldntLoad: (err) => `Couldn't load teacher availability: ${err.message}`,
     summaryStat: (available, unavailable) => `${available} available · ${unavailable} unavailable`
+  },
+  // "Class Groups" tab (see admin.js's renderClassGroupsTab and
+  // data_import/85_class_groups_generalized.sql) -- lets an admin split any
+  // class into any number of named groups and assign students into them.
+  // A class with no groups defined is completely unaffected everywhere
+  // else in the app; a class that DOES have groups shows a group picker
+  // instead of one roster on the teacher's own Take Attendance tab (see
+  // teacher.js's renderGroupPicker), tracking each group's submission
+  // independently.
+  classGroups: {
+    hint: "Split a class into groups you define -- once a class has at least one group, its teacher is asked which group they're taking attendance for, and each group is tracked (and can be submitted) separately. Most classes don't need this at all; leave them with no groups and nothing changes for them.",
+    classLabel: 'Class',
+    classPlaceholder: 'Select a class',
+    loadError: (err) => `Couldn't load: ${err.message}`,
+    groupsHeading: 'Groups',
+    noGroupsYet: 'No groups created for this class yet -- every student shows up on one shared roster, same as before.',
+    addGroupPlaceholder: 'New group name (e.g. "Group 1")',
+    addGroupButton: '+ Add Group',
+    addGroupNameRequired: 'Enter a name for the new group.',
+    addGroupDuplicate: 'This class already has a group with that name.',
+    addGroupError: (err) => `Couldn't create group: ${err.message}`,
+    groupAdded: (name) => `"${name}" added`,
+    renameButton: 'Rename',
+    renameSaveButton: 'Save',
+    renameCancelButton: 'Cancel',
+    renameNameRequired: 'Enter a name.',
+    renameError: (err) => `Couldn't rename: ${err.message}`,
+    renamed: 'Renamed',
+    deleteButton: 'Delete',
+    deleteConfirmButton: 'Click again to confirm',
+    deleteError: (err) => `Couldn't delete: ${err.message}`,
+    // Reassures rather than warns -- a deleted group's students aren't
+    // lost, just ungrouped again (see the class_group_id foreign key's ON
+    // DELETE SET NULL), same as before that group ever existed.
+    deleted: (name) => `Deleted "${name}" -- its students are now ungrouped, not removed from the class`,
+    rosterHeading: 'Assign Students',
+    rosterHint: "Pick a group for each student, or leave them Ungrouped. Saves as you go -- there's no separate save step.",
+    ungroupedOption: 'Ungrouped',
+    noStudentsInClass: 'This class has no students yet.',
+    assignmentSaved: 'Saved',
+    assignmentError: (err) => `Couldn't save: ${err.message}`
   }
 }
 
@@ -467,7 +508,36 @@ export const TEACHER_MESSAGES = {
     saveNoteLabel: 'Save',
     cancelNoteLabel: 'Cancel',
     noteSaved: 'Note saved',
-    couldntSaveNote: (message) => `Couldn't save note: ${message}`
+    couldntSaveNote: (message) => `Couldn't save note: ${message}`,
+    // Shown for a class with at least one admin-defined group (see
+    // data_import/85_class_groups_generalized.sql's class_groups table and
+    // admin.js's Class Groups tab) instead of jumping straight to the
+    // roster: any teacher assigned to the class can take attendance for
+    // any group, on any given day, so this asks which one before showing a
+    // roster -- see teacher.js's renderGroupPicker. A class with no groups
+    // defined at all never shows this; existing single-roster classes are
+    // completely unaffected.
+    groupPicker: {
+      heading: 'Which group are you taking attendance for?',
+      hint: "This class is split into groups. Each one is tracked and submitted separately, so pick the one you're actually taking today -- if the other group still needs to be done, whoever's got them can do it separately, any time.",
+      // Real groups get their name straight from data_import/85_class_
+      // groups_generalized.sql's class_groups table (an admin can call
+      // them anything, from the Class Groups tab -- see admin.js's
+      // renderClassGroupsTab) -- only the pseudo-group of students who
+      // haven't been assigned a real one yet uses a fixed label here.
+      ungroupedLabel: 'Ungrouped Students',
+      // Deliberately not hidden: a class that's only partly assigned groups
+      // (see the migration file above) still needs every student's
+      // attendance taken somewhere, so the ungrouped ones get their own
+      // card here rather than silently dropping out of both real groups.
+      ungroupedCardHint: (n) => `${n} student${n === 1 ? " hasn't" : " haven't"} been assigned Group 1 or 2 yet -- ask your admin when you get a chance. Their attendance still needs to be taken, so they're listed here separately for now.`,
+      studentCount: (n) => `${n} student${n === 1 ? '' : 's'}`,
+      statusSubmitted: (name) => name ? `Submitted by ${name} ✓` : 'Submitted ✓',
+      statusNeedsRework: 'Sent back for rework',
+      statusNotSubmitted: 'Not yet submitted',
+      openButtonLabel: 'Take Attendance',
+      backToGroupsLabel: '← Switch group'
+    }
   }
 }
 
