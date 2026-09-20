@@ -206,7 +206,34 @@ export const ADMIN_MESSAGES = {
     followUpStat: (missed, total) => `Missed ${missed} of ${total}`,
     perfectAttendanceHeading: 'Perfect Attendance',
     noPerfectAttendance: 'No one has perfect attendance in this range yet.',
-    perfectAttendanceStat: (total) => `Present all ${total} time${total === 1 ? '' : 's'}`
+    perfectAttendanceStat: (total) => `Present all ${total} time${total === 1 ? '' : 's'}`,
+    // Records tab's "Backfill Attendance" panel (see admin.js's
+    // wireBackfillPanel and openBackfillModal) -- lets an admin enter
+    // attendance for a class + past date directly, for a day a teacher
+    // never submitted at all (so there's nothing for the Today tab's
+    // review/reject-for-rework flow to act on -- that only ever covers
+    // today, and only covers a day that already has at least one row).
+    // Distinct from that flow: this one builds its rows from the class's
+    // full current roster, not from whatever attendance rows already
+    // exist, so a day with zero submissions still shows every
+    // student/teacher to mark rather than an empty list.
+    backfill: {
+      openButtonLabel: '+ Backfill Attendance',
+      heading: 'Backfill Attendance',
+      hint: "For a class and date a teacher never submitted (or only partly did) -- pick both below to enter it now on their behalf. Anyone who already has a record for that date keeps it as their starting point; everyone else defaults to Present, same as a fresh form.",
+      classLabel: 'Class',
+      classPlaceholder: 'Select a class',
+      dateLabel: 'Date',
+      loadButtonLabel: 'Load',
+      pickClassAndDate: 'Pick a class and a date first.',
+      futureDateError: "Can't backfill a date in the future.",
+      loadingRoster: 'Loading roster…',
+      errorLoadingRoster: (err) => `Couldn't load that class's roster: ${err.message}`,
+      noRosterForClass: 'This class has no students or teachers assigned yet.',
+      saveButtonLabel: 'Save Attendance',
+      saved: 'Attendance saved',
+      saveError: "Couldn't save attendance"
+    }
   },
   teacherAttendance: {
     // See data_import/18_teacher_attendance.sql -- teacher (not student)

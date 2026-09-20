@@ -276,19 +276,39 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
       // nothing here needs the row's id, since every write to this table
       // upserts by (class_id, date) instead of by id (see this file's
       // submit handler and renderLessonNoteEditForm).
-      const [{ data: existingStudentRecords }, { data: existingTeacherRecords }, { data: existingNote }] = await Promise.all([
+      // Also fetch which of this class's co-teachers marked themselves
+      // 'unavailable' for today via their own Calendar tab (see
+      // data_import/27_teacher_availability.sql) -- renderAttendanceForm
+      // uses this to default an un-recorded co-teacher's toggle to Absent
+      // instead of Present, so a teacher who said in advance they
+      // wouldn't be there stays marked absent even if whoever actually
+      // takes attendance doesn't think to toggle it themselves. Skipped
+      // entirely (rather than an `.in('teacher_id', [])` call, which some
+      // Supabase clients treat as an error) when this class has no
+      // co-teachers to look up.
+      const coTeacherIds = (myClass.class_teachers || [])
+        .map(ct => ct.teacher_id)
+        .filter(id => id !== userId)
+      const [{ data: existingStudentRecords }, { data: existingTeacherRecords }, { data: existingNote }, { data: availabilityRecords }] = await Promise.all([
         supabase.from('attendance').select('id, student_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
         supabase.from('teacher_attendance').select('id, teacher_id, status, needs_rework').eq('class_id', myClass.id).eq('date', today),
-        supabase.from('class_lesson_notes').select('note').eq('class_id', myClass.id).eq('date', today).maybeSingle()
+        supabase.from('class_lesson_notes').select('note').eq('class_id', myClass.id).eq('date', today).maybeSingle(),
+        coTeacherIds.length > 0
+          ? supabase.from('teacher_availability').select('teacher_id, status').eq('session_date', today).in('teacher_id', coTeacherIds)
+          : Promise.resolve({ data: [] })
       ])
       const hasRecords = existingStudentRecords && existingStudentRecords.length > 0
       const needsRework = hasRecords && existingStudentRecords.some(r => r.needs_rework)
+      const unavailableTeacherIds = new Set(
+        (availabilityRecords || []).filter(r => r.status === 'unavailable').map(r => r.teacher_id)
+      )
       renderAttendanceForm(myClass, today, userId, {
         hasRecords,
         needsRework,
         studentRecords: existingStudentRecords || [],
         teacherRecords: existingTeacherRecords || [],
-        existingNote: existingNote || null
+        existingNote: existingNote || null,
+        unavailableTeacherIds
       })
       trackTeacherPresence(userId, myClass.id)
     } else if (activeTabName === 'logHours') {
@@ -443,10 +463,17 @@ function renderNoClassMessage(myClass, today, session) {
  *   Same idea, for co-teachers (the signed-in teacher's own row is always
  *   'present' and isn't shown as a toggle-able row here, same as the form
  *   itself).
+ * @param {Set<string>} [existing.unavailableTeacherIds] - See
+ *   renderAttendanceForm's own doc comment for this same field -- passed
+ *   through unchanged so a co-teacher with no teacherRecords row (e.g.
+ *   newly added to the roster since this day was submitted) shows the
+ *   same Absent default here as they would on the editable form, rather
+ *   than this read-only summary optimistically showing them Present.
  */
 function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existing) {
   const tabContent = document.getElementById('tab-content')
-  const { studentRecords, teacherRecords } = existing
+  const { studentRecords, teacherRecords, unavailableTeacherIds } = existing
+  const unavailableIds = unavailableTeacherIds || new Set()
 
   const studentStatusById = new Map((studentRecords || []).map(r => [r.student_id, r.status]))
   const sortedStudents = [...(myClass.students || [])]
@@ -472,12 +499,15 @@ function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existin
     .filter(ct => ct.teacher_id !== userId)
     .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
   const coTeacherSummaryRows = coTeachers
-    .map(ct => `
+    .map(ct => {
+      const status = teacherStatusById.get(ct.teacher_id) || (unavailableIds.has(ct.teacher_id) ? 'absent' : 'present')
+      return `
       <div class="student-row-readonly">
         <span>${toTitleCase(ct.profiles?.full_name) || 'Teacher'}</span>
-        ${buildStatusPill(teacherStatusById.get(ct.teacher_id) || 'present')}
+        ${buildStatusPill(status)}
       </div>
-    `)
+    `
+    })
     .join('')
   const coTeacherSummaryHtml = coTeachers.length > 0 ? `
     <h4>${TEACHER_MESSAGES.attendanceForm.coTeacherHeading}</h4>
@@ -512,7 +542,8 @@ function renderAlreadySubmittedMessage(myClass, today, noteText, userId, existin
       isSelfEdit: true,
       studentRecords: studentRecords || [],
       teacherRecords: teacherRecords || [],
-      existingNote: noteText ? { note: noteText } : null
+      existingNote: noteText ? { note: noteText } : null,
+      unavailableTeacherIds: unavailableIds
     })
   })
 }
@@ -701,17 +732,28 @@ export function buildLessonNoteBubbleHtml(noteText) {
  *   this class, if any -- `{id, student_id, status, needs_rework}`.
  * @param {Array} existing.teacherRecords - Today's `teacher_attendance`
  *   rows for this class, if any -- `{id, teacher_id, status, needs_rework}`.
+ * @param {Set<string>} [existing.unavailableTeacherIds] - Co-teacher ids who
+ *   marked themselves 'unavailable' for today via the Calendar tab's
+ *   Unavailable toggle (see data_import/27_teacher_availability.sql and
+ *   renderTeacherCalendar below). Only consulted for a co-teacher row that
+ *   has no existing teacher_attendance record yet -- an explicit prior
+ *   submission always wins. Without this, a co-teacher who told the app in
+ *   advance they wouldn't be there still defaulted to "Present" on the
+ *   toggle, so if whoever actually took attendance didn't notice and
+ *   correct it, the saved record wrongly showed them present. Defaults to
+ *   an empty set when omitted, for safety.
  */
 function renderAttendanceForm(myClass, today, userId, existing) {
   const tabContent = document.getElementById('tab-content')
-  const { hasRecords, needsRework, isSelfEdit, studentRecords, teacherRecords, existingNote } = existing
+  const { hasRecords, needsRework, isSelfEdit, studentRecords, teacherRecords, existingNote, unavailableTeacherIds } = existing
+  const unavailableIds = unavailableTeacherIds || new Set()
 
   // Block duplicate submissions for the same day -- but only when nothing's
   // flagged and the teacher hasn't asked to edit it themselves either. A
   // flagged (or self-edit-requested) submission falls through to the form
   // below instead, pre-filled rather than blank.
   if (hasRecords && !needsRework && !isSelfEdit) {
-    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId, { studentRecords, teacherRecords })
+    renderAlreadySubmittedMessage(myClass, today, existingNote?.note, userId, { studentRecords, teacherRecords, unavailableTeacherIds: unavailableIds })
     return
   }
 
@@ -751,7 +793,12 @@ function renderAttendanceForm(myClass, today, userId, existing) {
     .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
   const coTeacherRows = coTeachers
     .map(ct => {
-      const status = teacherStatusById.get(ct.teacher_id) || 'present'
+      // An explicit prior submission always wins; failing that, a
+      // co-teacher who marked themselves unavailable for today (see
+      // unavailableTeacherIds above) defaults to Absent instead of the
+      // usual Present, so it stays correct even if whoever's actually
+      // taking attendance doesn't think to toggle it themselves.
+      const status = teacherStatusById.get(ct.teacher_id) || (unavailableIds.has(ct.teacher_id) ? 'absent' : 'present')
       return `
       <div class="co-teacher-row" data-teacher-id="${ct.teacher_id}">
         <span>${toTitleCase(ct.profiles?.full_name) || 'Teacher'}</span>
@@ -1054,7 +1101,8 @@ function renderAttendanceForm(myClass, today, userId, existing) {
       ])
       renderAlreadySubmittedMessage(myClass, today, noteText, userId, {
         studentRecords: freshStudentRecords || [],
-        teacherRecords: freshTeacherRecords || []
+        teacherRecords: freshTeacherRecords || [],
+        unavailableTeacherIds: unavailableIds
       })
     }
   })

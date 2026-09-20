@@ -100,7 +100,7 @@ export async function renderAdminDashboard(container, userId) {
 
     if (tabName === 'classes') renderClassesTab(userId)
     else if (tabName === 'students') renderStudentsTab(userId)
-    else if (tabName === 'records') renderRecordsTab()
+    else if (tabName === 'records') renderRecordsTab(userId)
     else if (tabName === 'volunteer') renderVolunteerHoursTab(userId)
     else if (tabName === 'today') renderTodayTab(userId)
     else if (tabName === 'calendar') renderCalendarTab(userId)
@@ -682,6 +682,218 @@ function wireReviewPanel(panel, classId, className, today, readOnly, userId) {
     // refreshing the board behind it.
     closeClassReviewModal()
     renderTodayTab(userId)
+  })
+}
+
+/**
+ * Opens the "Backfill Attendance" modal for one class + past date (see
+ * renderRecordsTab's "+ Backfill Attendance" panel and wireBackfillPanel
+ * above, which is the only caller). Visually reuses the Today tab's
+ * review-modal CSS (.review-modal-overlay/.review-modal/.review-list/etc
+ * -- see openClassReviewModal) for consistency, but is otherwise a
+ * separate implementation with one key difference: openClassReviewModal
+ * only ever shows rows for attendance records that already exist, because
+ * every date it's used for (always today) already has at least one row by
+ * the time it's opened. This modal exists specifically for a date that
+ * might have NO rows at all -- a teacher who never submitted -- so its
+ * rows are built from the class's actual current roster (every student
+ * plus every assigned teacher), pre-filled from whatever attendance rows
+ * for that date DO already exist and defaulting the rest to Present, same
+ * convention as a teacher's own fresh "Take Attendance" form. Saving then
+ * inserts a fresh row for anyone with no existing record and updates the
+ * rest in place, exactly like teacher.js's renderAttendanceForm's own
+ * insert-or-update split (see its doc comment) -- the same silent-no-op
+ * risk a blind `.update().eq('id', undefined)` would have here otherwise.
+ *
+ * @param {string} classId
+ * @param {string} className
+ * @param {string} date - 'YYYY-MM-DD', never in the future (see
+ *   wireBackfillPanel's guard).
+ * @param {string} userId - Signed-in admin's id, recorded as `marked_by`
+ *   on every row this inserts, and as the actor on the audit_log entry a
+ *   save here writes.
+ */
+async function openBackfillModal(classId, className, date, userId) {
+  closeBackfillModal()
+
+  let students, coTeachers, existingStudentRecords, existingTeacherRecords
+  try {
+    // Optional classes (Gita/Bhajan) get their roster from
+    // students.optional_class rather than students.class_id -- same
+    // reasoning and same lookup as teacher.js's renderTeacherDashboard
+    // (see OPTIONAL_CLASS_CODE_BY_NAME's own doc comment in format.js).
+    const optionalCode = OPTIONAL_CLASS_CODE_BY_NAME[className]
+    const [classRes, studentsRes, studentRecordsRes, teacherRecordsRes] = await Promise.all([
+      supabase.from('classes').select('class_teachers(teacher_id, profiles(full_name))').eq('id', classId).single(),
+      optionalCode
+        ? supabase.from('students').select('id, full_name').eq('optional_class', optionalCode)
+        : supabase.from('students').select('id, full_name').eq('class_id', classId),
+      supabase.from('attendance').select('id, student_id, status').eq('class_id', classId).eq('date', date),
+      supabase.from('teacher_attendance').select('id, teacher_id, status').eq('class_id', classId).eq('date', date)
+    ])
+    if (classRes.error || studentsRes.error || studentRecordsRes.error || teacherRecordsRes.error) {
+      throw (classRes.error || studentsRes.error || studentRecordsRes.error || teacherRecordsRes.error)
+    }
+    coTeachers = classRes.data?.class_teachers || []
+    students = studentsRes.data || []
+    existingStudentRecords = studentRecordsRes.data || []
+    existingTeacherRecords = teacherRecordsRes.data || []
+  } catch (err) {
+    console.error('Error loading roster for backfill:', err)
+    showToast(ADMIN_MESSAGES.records.backfill.errorLoadingRoster(err))
+    return
+  }
+
+  const studentRecordByStudentId = new Map(existingStudentRecords.map(r => [r.student_id, r]))
+  const teacherRecordByTeacherId = new Map(existingTeacherRecords.map(r => [r.teacher_id, r]))
+
+  // Same row markup/classes as openClassReviewModal's buildReviewRow, plus
+  // a second data attribute (data-existing-id, possibly empty) so the
+  // save handler below knows whether to insert or update this particular
+  // row -- buildReviewRow's single data-record-id doesn't distinguish
+  // those since it's never called for a row with no record to begin with.
+  const buildRow = (rowClass, entityId, existingRecord, name) => {
+    const status = existingRecord?.status || 'present'
+    return `
+    <div class="${rowClass}" data-entity-id="${entityId}" data-existing-id="${existingRecord?.id || ''}">
+      <span>${name}</span>
+      <div class="status-toggle">
+        <button class="toggle-btn present-btn${status === 'present' ? ' active' : ''}" data-status="present">Present</button>
+        <button class="toggle-btn absent-btn${status === 'absent' ? ' active' : ''}" data-status="absent">Absent</button>
+      </div>
+    </div>
+  `
+  }
+
+  const studentRows = [...students]
+    .sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+    .map(s => buildRow('review-student-row', s.id, studentRecordByStudentId.get(s.id), toTitleCase(s.full_name)))
+    .join('')
+
+  const teacherRows = [...coTeachers]
+    .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
+    .map(ct => buildRow('review-teacher-row', ct.teacher_id, teacherRecordByTeacherId.get(ct.teacher_id), toTitleCase(ct.profiles?.full_name) || 'Teacher'))
+    .join('')
+
+  const noRosterHtml = `<p>${ADMIN_MESSAGES.records.backfill.noRosterForClass}</p>`
+
+  const overlay = document.createElement('div')
+  overlay.id = 'backfill-modal-overlay'
+  overlay.className = 'review-modal-overlay'
+  overlay.innerHTML = `
+    <div class="review-modal" id="backfill-modal">
+      <button class="review-modal-close" aria-label="Close">&times;</button>
+      <h4>${className} — ${date}</h4>
+      ${studentRows ? `<h5>${ADMIN_MESSAGES.today.reviewStudentsHeading}</h5><div class="review-list">${studentRows}</div>` : ''}
+      ${teacherRows ? `<h5>${ADMIN_MESSAGES.today.reviewTeachersHeading}</h5><div class="review-list">${teacherRows}</div>` : ''}
+      ${!studentRows && !teacherRows ? noRosterHtml : ''}
+      ${studentRows || teacherRows ? `
+        <div class="review-actions">
+          <button class="save-review-btn">${ADMIN_MESSAGES.records.backfill.saveButtonLabel}</button>
+        </div>
+      ` : ''}
+      <p class="review-message hidden"></p>
+    </div>
+  `
+  document.body.appendChild(overlay)
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeBackfillModal()
+  })
+  overlay.querySelector('.review-modal-close').addEventListener('click', closeBackfillModal)
+  document.addEventListener('keydown', escKeyClosesBackfillModal)
+
+  wireBackfillModalSave(overlay.querySelector('.review-modal'), classId, className, date, userId)
+}
+
+/** Removes the Backfill Attendance modal from the page, if one is open. */
+function closeBackfillModal() {
+  document.getElementById('backfill-modal-overlay')?.remove()
+  document.removeEventListener('keydown', escKeyClosesBackfillModal)
+}
+
+/** Escape-key handler for the Backfill Attendance modal -- see openBackfillModal. */
+function escKeyClosesBackfillModal(e) {
+  if (e.key === 'Escape') closeBackfillModal()
+}
+
+/**
+ * Wires up an open Backfill Attendance modal's toggle buttons and its
+ * single "Save Attendance" action -- insert-or-update per row (see
+ * openBackfillModal's doc comment for why), then refreshes the Records
+ * tab's currently-loaded range behind it so the newly entered day shows
+ * up immediately if it falls within it.
+ *
+ * @param {HTMLElement} panel - The #backfill-modal element.
+ * @param {string} classId
+ * @param {string} className
+ * @param {string} date - 'YYYY-MM-DD'
+ * @param {string} userId
+ */
+function wireBackfillModalSave(panel, classId, className, date, userId) {
+  panel.querySelectorAll('.review-student-row, .review-teacher-row').forEach(row => {
+    row.querySelectorAll('.toggle-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        row.querySelectorAll('.toggle-btn').forEach(b => b.classList.remove('active'))
+        btn.classList.add('active')
+      })
+    })
+  })
+
+  const msg = panel.querySelector('.review-message')
+  const showReviewMessage = (text, kind) => {
+    msg.textContent = text
+    msg.className = `review-message ${kind}`
+    msg.classList.remove('hidden')
+  }
+
+  const saveBtn = panel.querySelector('.save-review-btn')
+  if (!saveBtn) return // No roster at all -- nothing to wire (see openBackfillModal's noRosterHtml branch).
+
+  saveBtn.addEventListener('click', async () => {
+    saveBtn.disabled = true
+
+    const buildWrites = (rowSelector, table, idColumn) =>
+      [...panel.querySelectorAll(rowSelector)].map(row => {
+        const status = row.querySelector('.toggle-btn.active')?.dataset.status || 'present'
+        const existingId = row.dataset.existingId
+        return existingId
+          ? supabase.from(table).update({ status }).eq('id', existingId)
+          : supabase.from(table).insert({ [idColumn]: row.dataset.entityId, class_id: classId, date, status, marked_by: userId })
+      })
+
+    const writes = [
+      ...buildWrites('.review-student-row', 'attendance', 'student_id'),
+      ...buildWrites('.review-teacher-row', 'teacher_attendance', 'teacher_id')
+    ]
+    const results = await Promise.all(writes)
+
+    if (results.some(r => r.error)) {
+      showReviewMessage(ADMIN_MESSAGES.records.backfill.saveError, 'error')
+      saveBtn.disabled = false
+      return
+    }
+
+    showReviewMessage(ADMIN_MESSAGES.records.backfill.saved, 'success')
+    const presentCount = [...panel.querySelectorAll('.toggle-btn.active[data-status="present"]')].length
+    const absentCount = [...panel.querySelectorAll('.toggle-btn.active[data-status="absent"]')].length
+    logAudit(
+      userId, 'admin', 'attendance.backfilled', 'attendance', classId,
+      `Backfilled ${className} attendance for ${date} (${presentCount} present, ${absentCount} absent)`,
+      { class_id: classId, date }
+    )
+
+    // Re-fetch this same date's range if it's currently loaded on the
+    // Records tab behind the modal, so the entry just saved shows up
+    // without the admin needing to hit Filter again themselves.
+    const startDate = document.getElementById('start-date')?.value
+    const endDate = document.getElementById('end-date')?.value
+    if (startDate && endDate && date >= startDate && date <= endDate) {
+      loadRecordsRange(startDate, endDate)
+      loadTeacherAttendanceRange(startDate, endDate)
+    }
+
+    setTimeout(closeBackfillModal, 1200)
   })
 }
 
@@ -1803,8 +2015,18 @@ async function renderStudentsTab(userId) {
  *    still pending review lives on the Volunteer Hours tab (and the Today
  *    tab's pending card), not here; this is finalized history only.
  * Defaults to showing just today's records.
+ *
+ * Also hosts the "+ Backfill Attendance" panel (see wireBackfillPanel and
+ * openBackfillModal below) -- lives here rather than on the Today tab
+ * since it's specifically for a class + past date that already has no (or
+ * incomplete) data, which is exactly what this tab is for looking up in
+ * the first place.
+ *
+ * @param {string} userId - Signed-in admin's id, recorded as `marked_by`
+ *   on any row the Backfill Attendance panel inserts, and as the actor on
+ *   the audit_log entry a save there writes.
  */
-async function renderRecordsTab() {
+async function renderRecordsTab(userId) {
   const tabContent = document.getElementById('tab-content')
   const today = todayStr()
   // Default "From" to a week ago rather than today, so the Records tab
@@ -1824,6 +2046,22 @@ async function renderRecordsTab() {
       <label>From: <input type="date" id="start-date" value="${weekAgo}" /></label>
       <label>To: <input type="date" id="end-date" value="${today}" /></label>
       <button id="filter-btn">Filter</button>
+    </div>
+
+    <button type="button" id="backfill-toggle-btn">${ADMIN_MESSAGES.records.backfill.openButtonLabel}</button>
+    <div id="backfill-panel" class="records-section hidden">
+      <h4>${ADMIN_MESSAGES.records.backfill.heading}</h4>
+      <p class="drag-hint">${ADMIN_MESSAGES.records.backfill.hint}</p>
+      <div class="date-range">
+        <label>${ADMIN_MESSAGES.records.backfill.classLabel}:
+          <select id="backfill-class-select">
+            <option value="">${ADMIN_MESSAGES.records.backfill.classPlaceholder}</option>
+          </select>
+        </label>
+        <label>${ADMIN_MESSAGES.records.backfill.dateLabel}: <input type="date" id="backfill-date-input" max="${today}" /></label>
+        <button type="button" id="backfill-load-btn">${ADMIN_MESSAGES.records.backfill.loadButtonLabel}</button>
+      </div>
+      <p class="backfill-panel-message hidden"></p>
     </div>
 
     <details class="records-section records-accordion-item">
@@ -1899,6 +2137,64 @@ async function renderRecordsTab() {
   loadLessonNotesRange(weekAgo, today)
   loadVolunteerHoursRecordsRange(weekAgo, today)
   loadSmileBoxRange(weekAgo, today)
+
+  wireBackfillPanel(userId)
+}
+
+/**
+ * Wires the Records tab's "+ Backfill Attendance" button and the panel it
+ * reveals (see renderRecordsTab's template above): populates the class
+ * dropdown, and opens openBackfillModal for whichever class + date the
+ * admin picks and clicks Load for.
+ *
+ * @param {string} userId - Threaded straight through to openBackfillModal.
+ */
+async function wireBackfillPanel(userId) {
+  const toggleBtn = document.getElementById('backfill-toggle-btn')
+  const panel = document.getElementById('backfill-panel')
+  const classSelect = document.getElementById('backfill-class-select')
+  const dateInput = document.getElementById('backfill-date-input')
+  const loadBtn = document.getElementById('backfill-load-btn')
+  const msg = panel.querySelector('.backfill-panel-message')
+
+  toggleBtn.addEventListener('click', () => panel.classList.toggle('hidden'))
+
+  // Same grade-order-first sort as the Today tab's status board (see
+  // renderTodayTab's sortedClasses above), so Gita/Bhajan/volunteer teams
+  // land after every grade rather than wherever alphabetical order
+  // happens to put them.
+  const { data: classes } = await supabase.from('classes').select('id, name').order('name')
+  const sortedClasses = [...(classes || [])].sort((a, b) => {
+    const rankA = GRADE_ORDER.indexOf(a.name)
+    const rankB = GRADE_ORDER.indexOf(b.name)
+    const orderA = rankA === -1 ? GRADE_ORDER.length : rankA
+    const orderB = rankB === -1 ? GRADE_ORDER.length : rankB
+    if (orderA !== orderB) return orderA - orderB
+    return a.name.localeCompare(b.name)
+  })
+  classSelect.insertAdjacentHTML('beforeend', sortedClasses.map(c => `<option value="${c.id}">${c.name}</option>`).join(''))
+
+  const showMsg = (text, kind) => {
+    msg.textContent = text
+    msg.className = `backfill-panel-message ${kind}`
+    msg.classList.remove('hidden')
+  }
+
+  loadBtn.addEventListener('click', () => {
+    const classId = classSelect.value
+    const date = dateInput.value
+    if (!classId || !date) {
+      showMsg(ADMIN_MESSAGES.records.backfill.pickClassAndDate, 'error')
+      return
+    }
+    if (date > todayStr()) {
+      showMsg(ADMIN_MESSAGES.records.backfill.futureDateError, 'error')
+      return
+    }
+    msg.classList.add('hidden')
+    const className = classSelect.options[classSelect.selectedIndex].text
+    openBackfillModal(classId, className, date, userId)
+  })
 }
 
 /**
