@@ -1776,6 +1776,288 @@ h4 {
   margin: 0.2rem 0;
 }
 
+/* --- Teacher "Insights" tab (src/teacher.js's renderInsightsTab) ----------
+   Two side-by-side leaderboard cards (stacked on narrow screens), ranked
+   rows of rank/name/stat -- reuses .history-empty above for the "not
+   enough data" state within a card. */
+.insights-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .insights-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.insights-card {
+  background: white;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.insights-card h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #4f46e5;
+}
+
+.insight-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+  border-top: 1px solid #f3f4f6;
+}
+
+.insight-row:first-child {
+  border-top: none;
+}
+
+.insight-rank {
+  font-weight: 600;
+  color: #9ca3af;
+  min-width: 1.25rem;
+}
+
+.insight-name {
+  flex: 1;
+  font-size: var(--font-label);
+  color: #374151;
+}
+
+.insight-stat {
+  font-size: var(--font-small);
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+/* --- "Recognition" tab (src/teacher.js's renderRecognitionTab, and its
+   read-only mirror in src/admin.js's renderRecognitionTab) --------------
+   Category pills to switch between the combined "Overall" leaderboard and
+   each teacher-defined category; the leaderboard card itself reuses
+   .insights-card/.insight-row above. Category management reuses
+   .class-group-* (add/rename/delete look identical to Class Groups, just
+   under a new class name since only the category's own creator gets the
+   buttons at all -- see renderRecognitionDetail). */
+.recognition-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.75rem 0;
+}
+
+.recognition-pill {
+  width: auto;
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 999px;
+}
+
+.recognition-pill.active {
+  background: #4f46e5;
+  color: white;
+}
+
+.recognition-leaderboard-card {
+  margin-bottom: 0.75rem;
+}
+
+.recognition-award-panel {
+  background: white;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.recognition-award-panel h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  color: #4f46e5;
+}
+
+#recognition-award-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+#recognition-award-form select,
+#recognition-award-form input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+#recognition-award-form input[type="number"] {
+  width: 70px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+#recognition-award-form button {
+  width: auto;
+  background: #4f46e5;
+  color: white;
+  padding: var(--btn-padding-sm);
+  font-size: var(--font-label);
+  border-radius: 6px;
+}
+
+.recognition-award-row {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.4rem;
+}
+
+.recognition-award-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.recognition-award-name {
+  font-weight: 600;
+  color: #374151;
+}
+
+.recognition-award-points {
+  color: #4f46e5;
+  font-size: var(--font-small);
+}
+
+.recognition-award-category {
+  color: #9ca3af;
+  font-size: var(--font-small);
+}
+
+.recognition-award-note {
+  margin-top: 0.2rem;
+  font-size: var(--font-small);
+  color: #6b7280;
+  font-style: italic;
+}
+
+.recognition-award-actions {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.recognition-award-edit-btn,
+.recognition-award-edit-save-btn,
+.recognition-award-edit-cancel-btn {
+  width: auto;
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.recognition-award-delete-btn {
+  width: auto;
+  background: white;
+  color: #ef4444;
+  border: 1px solid #ef4444;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.recognition-award-delete-btn.confirm-armed {
+  background: #ef4444;
+  color: white;
+}
+
+.recognition-award-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.recognition-award-edit-form input[type="number"] {
+  width: 70px;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+.recognition-award-edit-form input[type="text"] {
+  flex: 1;
+  min-width: 120px;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  font-size: var(--font-label);
+}
+
+.recognition-category-rename-btn,
+.recognition-category-rename-save-btn,
+.recognition-category-rename-cancel-btn {
+  width: auto;
+  background: white;
+  color: #4f46e5;
+  border: 1px solid #4f46e5;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.recognition-category-delete-btn {
+  width: auto;
+  background: white;
+  color: #ef4444;
+  border: 1px solid #ef4444;
+  padding: var(--btn-padding-xs);
+  font-size: var(--font-small);
+  border-radius: 4px;
+}
+
+.recognition-category-delete-btn.confirm-armed {
+  background: #ef4444;
+  color: white;
+}
+
+.recognition-manage-categories {
+  background: white;
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-top: 0.75rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.recognition-manage-categories summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #374151;
+  list-style: none;
+}
+
+.recognition-manage-categories summary::-webkit-details-marker {
+  display: none;
+}
+
 /* "+ Add Date" form at the bottom of the panel */
 .add-session-form {
   display: flex;

@@ -67,6 +67,7 @@ const ADMIN_TABS = [
   { key: 'records', label: 'Records' },
   { key: 'volunteer', label: 'Volunteer Hours' },
   { key: 'groups', label: 'Class Groups' },
+  { key: 'recognition', label: 'Recognition' },
   { key: 'calendar', label: 'Calendar' },
   { key: 'availability', label: 'Teacher Availability' },
   { key: 'activity', label: 'Activity' }
@@ -111,6 +112,7 @@ export async function renderAdminDashboard(container, userId) {
     else if (tabName === 'records') renderRecordsTab(userId)
     else if (tabName === 'volunteer') renderVolunteerHoursTab(userId)
     else if (tabName === 'groups') renderClassGroupsTab(userId)
+    else if (tabName === 'recognition') renderRecognitionTab()
     else if (tabName === 'today') renderTodayTab(userId)
     else if (tabName === 'calendar') renderCalendarTab(userId)
     else if (tabName === 'availability') renderTeacherAvailabilityTab()
@@ -1212,6 +1214,173 @@ function wireClassGroupsDetail(detail, classId, className, userId) {
         `Assigned ${toTitleCase(studentName)} to ${newGroupName} in ${className}`,
         { class_id: classId, student_id: studentId, class_group_id: newGroupId }
       )
+    })
+  })
+}
+
+const RECOGNITION_LEADERBOARD_TOP_N = 10
+
+/**
+ * "Recognition" tab: a read-only admin mirror of the teacher-facing
+ * Recognition tab (see teacher.js's renderRecognitionTab and data_import/
+ * 86_recognition_categories_and_points.sql) -- admins can see every
+ * class's categories, leaderboards and full award history, but never
+ * create/edit/delete anything here (that stays teacher-only, same as the
+ * Smile Box wall's read-only admin mirror under Records). No userId/audit
+ * logging needed since this tab never writes anything.
+ */
+async function renderRecognitionTab() {
+  const tabContent = document.getElementById('tab-content')
+  const messages = ADMIN_MESSAGES.recognition
+
+  const { data: classes } = await supabase.from('classes').select('id, name').order('name')
+  const sortedClasses = [...(classes || [])].sort((a, b) => {
+    const rankA = GRADE_ORDER.indexOf(a.name)
+    const rankB = GRADE_ORDER.indexOf(b.name)
+    const orderA = rankA === -1 ? GRADE_ORDER.length : rankA
+    const orderB = rankB === -1 ? GRADE_ORDER.length : rankB
+    if (orderA !== orderB) return orderA - orderB
+    return a.name.localeCompare(b.name)
+  })
+
+  tabContent.innerHTML = `
+    <p class="drag-hint">${messages.hint}</p>
+    <div class="date-range">
+      <label>${messages.classLabel}:
+        <select id="recognition-admin-class-select">
+          <option value="">${messages.classPlaceholder}</option>
+          ${sortedClasses.map(c => `<option value="${c.id}">${c.name}</option>`).join('')}
+        </select>
+      </label>
+    </div>
+    <div id="recognition-admin-detail"></div>
+  `
+
+  document.getElementById('recognition-admin-class-select').addEventListener('change', (e) => {
+    const classId = e.target.value
+    const detail = document.getElementById('recognition-admin-detail')
+    if (!classId) {
+      detail.innerHTML = ''
+      return
+    }
+    const className = e.target.options[e.target.selectedIndex].text
+    loadRecognitionAdminDetail(classId, className)
+  })
+}
+
+/**
+ * Fetches and renders one class's recognition categories, plus whichever
+ * leaderboard (Overall, or one category) is currently selected, and the
+ * full award history -- all read-only. Category pills switch the
+ * selection with a pure re-render (no refetch), same as the teacher-side
+ * tab this mirrors.
+ *
+ * @param {string} classId
+ * @param {string} className
+ * @param {string|null} [selectedCategoryId] - null means "Overall".
+ */
+async function loadRecognitionAdminDetail(classId, className, selectedCategoryId = null) {
+  const detail = document.getElementById('recognition-admin-detail')
+  const messages = ADMIN_MESSAGES.recognition
+  detail.innerHTML = `<p>${ADMIN_MESSAGES.records.backfill.loadingRoster}</p>`
+
+  let categories, points, students, teachers
+  try {
+    // Optional classes (Gita/Bhajan) get their roster from
+    // students.optional_class rather than students.class_id -- same
+    // lookup loadClassGroupsDetail above and teacher.js's
+    // renderTeacherDashboard both already use (see
+    // OPTIONAL_CLASS_CODE_BY_NAME's own doc comment in format.js).
+    const optionalCode = OPTIONAL_CLASS_CODE_BY_NAME[className]
+    const [categoriesRes, pointsRes, studentsRes] = await Promise.all([
+      supabase.from('recognition_categories').select('id, name').eq('class_id', classId).order('name'),
+      supabase.from('recognition_points').select('id, category_id, student_id, points, teacher_id, note, awarded_at').eq('class_id', classId).order('awarded_at', { ascending: false }),
+      optionalCode
+        ? supabase.from('students').select('id, full_name').eq('optional_class', optionalCode)
+        : supabase.from('students').select('id, full_name').eq('class_id', classId)
+    ])
+    if (categoriesRes.error || pointsRes.error || studentsRes.error) throw (categoriesRes.error || pointsRes.error || studentsRes.error)
+    categories = categoriesRes.data || []
+    points = pointsRes.data || []
+    students = studentsRes.data || []
+
+    const teacherIds = [...new Set(points.map(p => p.teacher_id))]
+    const teachersRes = teacherIds.length > 0
+      ? await supabase.from('profiles').select('id, full_name').in('id', teacherIds)
+      : { data: [] }
+    teachers = teachersRes.data || []
+  } catch (err) {
+    detail.innerHTML = `<p class="error">${messages.loadError(err)}</p>`
+    return
+  }
+
+  const nameByStudentId = new Map(students.map(s => [s.id, toTitleCase(s.full_name)]))
+  const teacherNameById = new Map(teachers.map(t => [t.id, t.full_name]))
+
+  const validSelection = selectedCategoryId && categories.some(c => c.id === selectedCategoryId) ? selectedCategoryId : null
+  const pointsInScope = validSelection ? points.filter(p => p.category_id === validSelection) : points
+
+  const totalsByStudent = new Map()
+  pointsInScope.forEach(p => {
+    totalsByStudent.set(p.student_id, (totalsByStudent.get(p.student_id) || 0) + p.points)
+  })
+  const leaderboard = [...totalsByStudent.entries()]
+    .map(([studentId, total]) => ({ studentId, name: nameByStudentId.get(studentId) || 'Unknown', total }))
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+    .slice(0, RECOGNITION_LEADERBOARD_TOP_N)
+
+  const leaderboardRowsHtml = leaderboard.length > 0
+    ? leaderboard.map((e, i) => `
+        <div class="insight-row">
+          <span class="insight-rank">${i + 1}.</span>
+          <span class="insight-name">${e.name}</span>
+          <span class="insight-stat">${messages.pointsStat(e.total)}</span>
+        </div>
+      `).join('')
+    : `<p class="history-empty">${messages.leaderboardEmpty}</p>`
+
+  const pillsHtml = `
+    <div class="recognition-pills">
+      <button type="button" class="recognition-pill${!validSelection ? ' active' : ''}" data-category-id="">${messages.overallLabel}</button>
+      ${categories.map(c => `<button type="button" class="recognition-pill${c.id === validSelection ? ' active' : ''}" data-category-id="${c.id}">${escapeHtml(c.name)}</button>`).join('')}
+    </div>
+  `
+
+  const selectedCategory = validSelection ? categories.find(c => c.id === validSelection) : null
+
+  const logRowsHtml = pointsInScope.length > 0
+    ? pointsInScope.map(p => {
+        const categoryName = selectedCategory ? selectedCategory.name : (categories.find(c => c.id === p.category_id)?.name || '')
+        return `
+          <div class="recognition-award-row">
+            <div class="recognition-award-main">
+              <span class="recognition-award-name">${nameByStudentId.get(p.student_id) || 'Unknown'}</span>
+              <span class="recognition-award-points">${messages.pointsStat(p.points)}</span>
+              ${!selectedCategory ? `<span class="recognition-award-category">${escapeHtml(categoryName)}</span>` : ''}
+              <span class="recognition-award-category">${messages.awardedBy(teacherNameById.get(p.teacher_id) || 'Unknown')}</span>
+            </div>
+            ${p.note ? `<div class="recognition-award-note">${escapeHtml(p.note)}</div>` : ''}
+          </div>
+        `
+      }).join('')
+    : `<p class="history-empty">${messages.noLogYet}</p>`
+
+  detail.innerHTML = `
+    <h4>${className}</h4>
+    ${categories.length === 0 ? `<p>${messages.noCategoriesYet}</p>` : `
+      ${pillsHtml}
+      <div class="insights-card recognition-leaderboard-card">
+        <h4>${selectedCategory ? escapeHtml(selectedCategory.name) : messages.overallLabel}</h4>
+        ${leaderboardRowsHtml}
+      </div>
+      <h4>${messages.logHeading}</h4>
+      <div>${logRowsHtml}</div>
+    `}
+  `
+
+  detail.querySelectorAll('.recognition-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      loadRecognitionAdminDetail(classId, className, btn.dataset.categoryId || null)
     })
   })
 }

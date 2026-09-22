@@ -190,20 +190,23 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
         .join('')}</div>`
     : ''
 
-  // Which tabs the class switcher actually applies to -- Take Attendance
-  // and History are the only two that read activeClassIndex (see
-  // renderActiveTab below); Log Hours, Smile Box and Calendar are each
-  // either class-independent or switched some other way (see
-  // classSwitcherHtml's own doc comment above).
-  const CLASS_SWITCHER_TABS = ['attendance', 'history']
+  // Which tabs the class switcher actually applies to -- Take Attendance,
+  // History, Insights and Recognition are the only four that read
+  // activeClassIndex (see renderActiveTab below); Log Hours, Smile Box and
+  // Calendar are each either class-independent or switched some other way
+  // (see classSwitcherHtml's own doc comment above).
+  const CLASS_SWITCHER_TABS = ['attendance', 'history', 'insights', 'recognition']
 
-  // Take Attendance and History only make sense when this teacher has at
-  // least one real attendance class -- omitted entirely (not just
-  // disabled) for a teacher assigned only to volunteer team(s), since
-  // there'd be nothing for either tab to show. Most teachers have no
-  // volunteer team at all, so Log Hours only appears when volunteerTeams
-  // is non-empty. Calendar always applies. Order matches what the tab row
-  // always showed: Take Attendance, Log Hours, History, Calendar.
+  // Take Attendance, History, Insights and Recognition only make sense when
+  // this teacher has at least one real attendance class -- omitted entirely
+  // (not just disabled) for a teacher assigned only to volunteer team(s),
+  // since there'd be nothing for any of the four to show. Most teachers
+  // have no volunteer team at all, so Log Hours only appears when
+  // volunteerTeams is non-empty. Calendar always applies. Order matches
+  // what the tab row always showed, with Insights added right after
+  // History (attendance-derived) and Recognition right after that
+  // (teacher-given points -- see data_import/86_recognition_categories_
+  // and_points.sql).
   const teacherTabs = [
     ...(attendanceClasses.length > 0 ? [{ key: 'attendance', label: 'Take Attendance' }] : []),
     // Labeled "Volunteer Hours" (not "Log Hours") to match the admin
@@ -213,6 +216,8 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
     // function's doc comment above for why.
     ...(volunteerTeams.length > 0 && role !== 'assistant' ? [{ key: 'logHours', label: 'Volunteer Hours' }] : []),
     ...(attendanceClasses.length > 0 ? [{ key: 'history', label: 'History' }] : []),
+    ...(attendanceClasses.length > 0 ? [{ key: 'insights', label: 'Insights' }] : []),
+    ...(attendanceClasses.length > 0 ? [{ key: 'recognition', label: 'Recognition' }] : []),
     // Always shown, same as Calendar -- posting/reading Smile Box entries
     // has nothing to do with which class (if any) a teacher is assigned to.
     { key: 'smileBox', label: 'Smile Box' },
@@ -340,6 +345,12 @@ export async function renderTeacherDashboard(container, userId, role = 'teacher'
     } else if (activeTabName === 'history') {
       if (attendanceClasses.length === 0) return // see the 'attendance' branch above
       renderTeacherHistory(attendanceClasses[activeClassIndex])
+    } else if (activeTabName === 'insights') {
+      if (attendanceClasses.length === 0) return // see the 'attendance' branch above
+      renderInsightsTab(attendanceClasses[activeClassIndex])
+    } else if (activeTabName === 'recognition') {
+      if (attendanceClasses.length === 0) return // see the 'attendance' branch above
+      renderRecognitionTab(attendanceClasses[activeClassIndex], userId)
     } else if (activeTabName === 'smileBox') {
       renderSmileBoxTab(userId)
     } else {
@@ -1524,6 +1535,567 @@ async function renderTeacherHistory(myClass) {
     <h3>${messages.heading(myClass.name)}</h3>
     ${dateBlocksHtml}
   `
+}
+
+/**
+ * "Insights" tab: for this class's current roster, who's been most
+ * reliably present and who's missed the most classes, all-time --
+ * cumulative counts (not just a percentage), each with its own percentage
+ * shown alongside for context, so "most absent" means "missed the most
+ * classes" rather than something that quietly favors a student who's only
+ * been on the roster a short while.
+ *
+ * Same "current roster, not a historical snapshot" scoping as
+ * renderTeacherHistory right above -- a student who's since left the class
+ * has no attendance rows counted here (they're not in myClass.students
+ * any more to count them against), and a student who joined partway
+ * through the year is compared on their own actual record, not penalized
+ * for classes held before they were enrolled.
+ *
+ * A student with zero attendance rows on record at all (never once
+ * marked, in either direction) is left out of both rankings entirely --
+ * "most absent" should mean actually marked absent, not simply never
+ * marked -- and called out in a single summary line instead, rather than
+ * silently vanishing with no explanation for why the rankings look short
+ * of the full roster.
+ *
+ * @param {object} myClass - The teacher's class row, including `.students`.
+ */
+async function renderInsightsTab(myClass) {
+  const tabContent = document.getElementById('tab-content')
+  const messages = TEACHER_MESSAGES.insights
+
+  const { data: records, error } = await supabase
+    .from('attendance')
+    .select('student_id, status')
+    .eq('class_id', myClass.id)
+
+  if (error) {
+    tabContent.innerHTML = `<p class="error">${messages.loadError(error)}</p>`
+    return
+  }
+
+  // Tally once per student, from this class's full attendance history --
+  // cheaper than filtering the same array over and over per roster row.
+  const statsByStudentId = new Map()
+  ;(records || []).forEach(r => {
+    if (!statsByStudentId.has(r.student_id)) statsByStudentId.set(r.student_id, { present: 0, total: 0 })
+    const s = statsByStudentId.get(r.student_id)
+    s.total += 1
+    if (r.status === 'present') s.present += 1
+  })
+
+  const roster = myClass.students || []
+  const withData = []
+  const withoutData = []
+  roster.forEach(s => {
+    const stats = statsByStudentId.get(s.id)
+    if (!stats || stats.total === 0) {
+      withoutData.push(s)
+      return
+    }
+    withData.push({
+      name: toTitleCase(s.full_name),
+      present: stats.present,
+      absent: stats.total - stats.present,
+      total: stats.total,
+      presentPct: Math.round((stats.present / stats.total) * 100)
+    })
+  })
+
+  const buildRankedRows = (entries, statFn) => entries
+    .map((e, i) => `
+      <div class="insight-row">
+        <span class="insight-rank">${i + 1}.</span>
+        <span class="insight-name">${e.name}</span>
+        <span class="insight-stat">${statFn(e)}</span>
+      </div>
+    `)
+    .join('')
+
+  // Ranked by raw count first (ties broken by name) -- "most present"/
+  // "most absent" reads as a cumulative leaderboard, not a rate, so a
+  // long-enrolled student's real track record outranks a newcomer's small
+  // sample. Top 5 each; a class with fewer than 5 students-with-data just
+  // shows however many there are.
+  const TOP_N = 5
+  const mostPresent = [...withData]
+    .sort((a, b) => b.present - a.present || a.name.localeCompare(b.name))
+    .slice(0, TOP_N)
+  const mostAbsent = [...withData]
+    .filter(e => e.absent > 0)
+    .sort((a, b) => b.absent - a.absent || a.name.localeCompare(b.name))
+    .slice(0, TOP_N)
+
+  tabContent.innerHTML = `
+    <h3>${messages.heading(myClass.name)}</h3>
+    <p class="drag-hint">${messages.hint}</p>
+    <div class="insights-columns">
+      <div class="insights-card">
+        <h4>${messages.mostPresentHeading}</h4>
+        ${mostPresent.length > 0 ? buildRankedRows(mostPresent, e => messages.presentStat(e.present, e.total, e.presentPct)) : `<p class="history-empty">${messages.noDataYet}</p>`}
+      </div>
+      <div class="insights-card">
+        <h4>${messages.mostAbsentHeading}</h4>
+        ${mostAbsent.length > 0 ? buildRankedRows(mostAbsent, e => messages.absentStat(e.absent, e.total, 100 - e.presentPct)) : `<p class="history-empty">${messages.noDataYet}</p>`}
+      </div>
+    </div>
+    ${withoutData.length > 0 ? `<p class="drag-hint">${messages.noRecordsNote(withoutData.length)}</p>` : ''}
+  `
+}
+
+const RECOGNITION_LEADERBOARD_TOP_N = 10
+
+/**
+ * "Recognition" tab for teachers: teachers define their own named point
+ * categories for a class (e.g. "Most Helpful", "Great Effort") and award
+ * points to kids over time -- see data_import/86_recognition_categories_
+ * and_points.sql's own doc comment for the full design (categories are
+ * shared with any co-teacher of this class; only the teacher who created a
+ * category or gave a points award can rename/delete it). Points accumulate
+ * into a leaderboard per category, plus one combined "Overall" leaderboard
+ * across every category.
+ *
+ * Fetches once, then `renderRecognitionDetail` re-renders just the
+ * category-pill/leaderboard/award panel from that same in-memory data when
+ * switching between categories -- only a category or points write refetches
+ * via a fresh call to this function.
+ *
+ * @param {object} myClass
+ * @param {string} userId
+ * @param {string|null} [selectedCategoryId] - null means the "Overall" view.
+ */
+async function renderRecognitionTab(myClass, userId, selectedCategoryId = null) {
+  const tabContent = document.getElementById('tab-content')
+  tabContent.innerHTML = '<p>Loading…</p>'
+  const messages = TEACHER_MESSAGES.recognition
+
+  const [{ data: categories, error: categoriesError }, { data: points, error: pointsError }] = await Promise.all([
+    supabase.from('recognition_categories').select('id, name, created_by').eq('class_id', myClass.id).order('name'),
+    supabase.from('recognition_points').select('id, category_id, student_id, points, teacher_id, note, awarded_at').eq('class_id', myClass.id).order('awarded_at', { ascending: false })
+  ])
+
+  const firstError = categoriesError || pointsError
+  if (firstError) {
+    tabContent.innerHTML = `<p class="error">${messages.loadError(firstError)}</p>`
+    return
+  }
+
+  const roster = [...(myClass.students || [])].sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''))
+  const nameByStudentId = new Map(roster.map(s => [s.id, toTitleCase(s.full_name)]))
+
+  // A category that got deleted (by whoever created it) between page loads
+  // shouldn't leave the panel stuck showing it -- fall back to Overall.
+  const validSelection = selectedCategoryId && (categories || []).some(c => c.id === selectedCategoryId)
+    ? selectedCategoryId
+    : null
+
+  tabContent.innerHTML = `
+    <h3>${messages.heading(myClass.name)}</h3>
+    <p class="drag-hint">${messages.hint}</p>
+    <div id="recognition-detail"></div>
+  `
+  renderRecognitionDetail(myClass, userId, categories || [], points || [], nameByStudentId, roster, validSelection)
+}
+
+/**
+ * Renders the category pills, leaderboard, award-points form (when a
+ * specific category is selected), manage-categories panel, and recent
+ * awards log into #recognition-detail -- everything below the tab's own
+ * heading/hint, which `renderRecognitionTab` renders once and leaves alone.
+ *
+ * @param {object} myClass
+ * @param {string} userId
+ * @param {Array<{id: string, name: string, created_by: string}>} categories
+ * @param {Array<{id: string, category_id: string, student_id: string, points: number, teacher_id: string, note: string|null, awarded_at: string}>} points
+ * @param {Map<string, string>} nameByStudentId
+ * @param {Array<object>} roster
+ * @param {string|null} selectedCategoryId - null means "Overall".
+ */
+function renderRecognitionDetail(myClass, userId, categories, points, nameByStudentId, roster, selectedCategoryId) {
+  const messages = TEACHER_MESSAGES.recognition
+  const detail = document.getElementById('recognition-detail')
+
+  const pointsInScope = selectedCategoryId
+    ? points.filter(p => p.category_id === selectedCategoryId)
+    : points // Overall: every category combined.
+
+  const totalsByStudent = new Map()
+  pointsInScope.forEach(p => {
+    totalsByStudent.set(p.student_id, (totalsByStudent.get(p.student_id) || 0) + p.points)
+  })
+  const leaderboard = [...totalsByStudent.entries()]
+    .map(([studentId, total]) => ({ studentId, name: nameByStudentId.get(studentId) || 'Unknown', total }))
+    .sort((a, b) => b.total - a.total || a.name.localeCompare(b.name))
+    .slice(0, RECOGNITION_LEADERBOARD_TOP_N)
+
+  const leaderboardRowsHtml = leaderboard.length > 0
+    ? leaderboard.map((e, i) => `
+        <div class="insight-row">
+          <span class="insight-rank">${i + 1}.</span>
+          <span class="insight-name">${e.name}</span>
+          <span class="insight-stat">${messages.pointsStat(e.total)}</span>
+        </div>
+      `).join('')
+    : `<p class="history-empty">${messages.leaderboardEmpty}</p>`
+
+  const pillsHtml = `
+    <div class="recognition-pills">
+      <button type="button" class="recognition-pill${!selectedCategoryId ? ' active' : ''}" data-category-id="">${messages.overallLabel}</button>
+      ${categories.map(c => `<button type="button" class="recognition-pill${c.id === selectedCategoryId ? ' active' : ''}" data-category-id="${c.id}">${escapeHtml(c.name)}</button>`).join('')}
+    </div>
+  `
+
+  const selectedCategory = selectedCategoryId ? categories.find(c => c.id === selectedCategoryId) : null
+
+  // The award-points form and per-award edit/delete controls only make
+  // sense once a specific category is selected -- "give points" always
+  // means "in this category", and Overall is a read-only combined view.
+  const awardFormHtml = selectedCategory ? `
+    <div class="recognition-award-panel">
+      <h4>${messages.awardHeading}</h4>
+      <form id="recognition-award-form">
+        <select id="recognition-award-student" required>
+          <option value="">${messages.awardStudentPlaceholder}</option>
+          ${roster.map(s => `<option value="${s.id}">${toTitleCase(s.full_name)}</option>`).join('')}
+        </select>
+        <input type="number" id="recognition-award-points" min="1" step="1" value="1" required />
+        <input type="text" id="recognition-award-note" placeholder="${messages.awardNotePlaceholder}" />
+        <button type="submit">${messages.awardButton}</button>
+      </form>
+      <p id="recognition-award-message" class="hidden"></p>
+    </div>
+  ` : ''
+
+  const recentForScope = pointsInScope.slice(0, 15)
+  const recentAwardsHtml = recentForScope.length > 0
+    ? recentForScope.map(p => {
+        const categoryName = selectedCategory ? selectedCategory.name : (categories.find(c => c.id === p.category_id)?.name || '')
+        const isOwn = p.teacher_id === userId
+        return `
+          <div class="recognition-award-row" data-award-id="${p.id}" data-points="${p.points}">
+            <div class="recognition-award-main">
+              <span class="recognition-award-name">${nameByStudentId.get(p.student_id) || 'Unknown'}</span>
+              <span class="recognition-award-points">${messages.pointsStat(p.points)}</span>
+              ${!selectedCategory ? `<span class="recognition-award-category">${escapeHtml(categoryName)}</span>` : ''}
+            </div>
+            ${p.note ? `<div class="recognition-award-note">${escapeHtml(p.note)}</div>` : ''}
+            ${isOwn ? `
+              <div class="recognition-award-actions">
+                <button type="button" class="recognition-award-edit-btn">${messages.editButton}</button>
+                <button type="button" class="recognition-award-delete-btn">${messages.awardDeleteButton}</button>
+              </div>
+            ` : ''}
+          </div>
+        `
+      }).join('')
+    : `<p class="history-empty">${messages.noAwardsYet}</p>`
+
+  const categoryRowsHtml = categories.map(c => `
+    <div class="class-group-row" data-category-id="${c.id}">
+      <span class="class-group-name">${escapeHtml(c.name)}</span>
+      ${c.created_by === userId ? `
+        <div class="class-group-row-actions">
+          <button type="button" class="recognition-category-rename-btn">${messages.renameButton}</button>
+          <button type="button" class="recognition-category-delete-btn">${messages.deleteButton}</button>
+        </div>
+      ` : ''}
+    </div>
+  `).join('')
+
+  detail.innerHTML = `
+    ${pillsHtml}
+    <div class="insights-card recognition-leaderboard-card">
+      <h4>${selectedCategory ? escapeHtml(selectedCategory.name) : messages.overallLabel}</h4>
+      ${leaderboardRowsHtml}
+    </div>
+    ${awardFormHtml}
+    <h4>${messages.recentAwardsHeading}</h4>
+    <div id="recognition-award-list">${recentAwardsHtml}</div>
+    <details class="recognition-manage-categories"${categories.length === 0 ? ' open' : ''}>
+      <summary>${messages.manageCategoriesHeading}</summary>
+      <div id="recognition-category-list">${categoryRowsHtml || `<p>${messages.noCategoriesYet}</p>`}</div>
+      <div class="class-group-add-row">
+        <input type="text" id="recognition-category-add-input" placeholder="${messages.addCategoryPlaceholder}" />
+        <button type="button" id="recognition-category-add-btn">${messages.addCategoryButton}</button>
+      </div>
+      <p id="recognition-category-message" class="hidden"></p>
+    </details>
+  `
+
+  wireRecognitionDetail(myClass, userId, categories, nameByStudentId, roster, selectedCategoryId)
+}
+
+/**
+ * Wires everything renderRecognitionDetail just rendered: switching
+ * category pills (re-renders from already-fetched data, no refetch),
+ * add/rename/delete on categories, giving points, and edit/delete on a
+ * teacher's own recent awards. Every write here re-fetches via
+ * renderRecognitionTab on success -- same "always reload from the
+ * database rather than patch the DOM" discipline as admin.js's Class
+ * Groups tab, so the leaderboard, the recent-awards list and every
+ * category pill always agree with what's actually saved.
+ *
+ * @param {object} myClass
+ * @param {string} userId
+ * @param {Array<{id: string, name: string, created_by: string}>} categories
+ * @param {Map<string, string>} nameByStudentId
+ * @param {Array<object>} roster
+ * @param {string|null} selectedCategoryId
+ */
+function wireRecognitionDetail(myClass, userId, categories, nameByStudentId, roster, selectedCategoryId) {
+  const messages = TEACHER_MESSAGES.recognition
+  const detail = document.getElementById('recognition-detail')
+  const catMsg = detail.querySelector('#recognition-category-message')
+  const showCatMsg = (text, kind) => {
+    if (!catMsg) return
+    catMsg.textContent = text
+    catMsg.className = kind
+    catMsg.classList.remove('hidden')
+  }
+
+  // --- Switch category pill -- pure re-render, no network call ---------
+  detail.querySelectorAll('.recognition-pill').forEach(btn => {
+    btn.addEventListener('click', () => {
+      renderRecognitionTab(myClass, userId, btn.dataset.categoryId || null)
+    })
+  })
+
+  // --- Add a category ----------------------------------------------------
+  const addBtn = detail.querySelector('#recognition-category-add-btn')
+  const addInput = detail.querySelector('#recognition-category-add-input')
+  addBtn?.addEventListener('click', async () => {
+    const name = addInput.value.trim()
+    if (!name) {
+      showCatMsg(messages.addCategoryNameRequired, 'error')
+      return
+    }
+    addBtn.disabled = true
+    const { error } = await supabase.from('recognition_categories').insert({ class_id: myClass.id, name, created_by: userId })
+    addBtn.disabled = false
+    if (error) {
+      // Postgres' unique_violation code, from this table's unique(class_id,
+      // name) constraint (see data_import/86_recognition_categories_and_
+      // points.sql) -- a friendlier message than the raw constraint text.
+      showCatMsg(error.code === '23505' ? messages.addCategoryDuplicate : messages.addCategoryError(error), 'error')
+      return
+    }
+    window.showToast(messages.categoryAdded(name))
+    logAudit(
+      userId, 'teacher', 'recognition_category.created', 'recognition_categories', null,
+      `Added recognition category "${name}" to ${myClass.name}`,
+      { class_id: myClass.id, name }
+    )
+    renderRecognitionTab(myClass, userId, null)
+  })
+
+  // --- Rename a category (own only -- see this row's markup) ------------
+  detail.querySelectorAll('.recognition-category-rename-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.class-group-row')
+      const categoryId = row.dataset.categoryId
+      const nameSpan = row.querySelector('.class-group-name')
+      const currentName = nameSpan.textContent
+      row.querySelector('.class-group-row-actions').innerHTML = ''
+      nameSpan.outerHTML = `
+        <input type="text" class="class-group-rename-input" value="${escapeHtml(currentName)}" />
+        <button type="button" class="recognition-category-rename-save-btn">${messages.renameSaveButton}</button>
+        <button type="button" class="recognition-category-rename-cancel-btn">${messages.renameCancelButton}</button>
+      `
+      row.querySelector('.recognition-category-rename-cancel-btn').addEventListener('click', () => {
+        renderRecognitionTab(myClass, userId, selectedCategoryId)
+      })
+      row.querySelector('.recognition-category-rename-save-btn').addEventListener('click', async () => {
+        const newName = row.querySelector('.class-group-rename-input').value.trim()
+        if (!newName) {
+          showCatMsg(messages.renameNameRequired, 'error')
+          return
+        }
+        const { error } = await supabase.from('recognition_categories').update({ name: newName }).eq('id', categoryId)
+        if (error) {
+          showCatMsg(error.code === '23505' ? messages.addCategoryDuplicate : messages.renameError(error), 'error')
+          return
+        }
+        window.showToast(messages.categoryRenamed)
+        logAudit(
+          userId, 'teacher', 'recognition_category.renamed', 'recognition_categories', categoryId,
+          `Renamed a ${myClass.name} recognition category "${currentName}" -> "${newName}"`,
+          { class_id: myClass.id, category_id: categoryId, old_name: currentName, new_name: newName }
+        )
+        renderRecognitionTab(myClass, userId, selectedCategoryId)
+      })
+    })
+  })
+
+  // --- Delete a category (own only) --------------------------------------
+  // Two-click confirm, same pattern as admin.js's Class Groups delete --
+  // deleting a category also deletes every points award ever given in it
+  // (on delete cascade, see the migration), so the confirm step matters
+  // more here than most.
+  detail.querySelectorAll('.recognition-category-delete-btn').forEach(btn => {
+    let armed = false
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.class-group-row')
+      const categoryId = row.dataset.categoryId
+      const categoryName = row.querySelector('.class-group-name').textContent
+      if (!armed) {
+        armed = true
+        btn.textContent = messages.deleteConfirmButton
+        btn.classList.add('confirm-armed')
+        return
+      }
+      btn.disabled = true
+      const { error } = await supabase.from('recognition_categories').delete().eq('id', categoryId)
+      if (error) {
+        showCatMsg(messages.deleteError(error), 'error')
+        btn.disabled = false
+        armed = false
+        btn.textContent = messages.deleteButton
+        btn.classList.remove('confirm-armed')
+        return
+      }
+      window.showToast(messages.categoryDeleted(categoryName))
+      logAudit(
+        userId, 'teacher', 'recognition_category.deleted', 'recognition_categories', categoryId,
+        `Deleted recognition category "${categoryName}" from ${myClass.name}`,
+        { class_id: myClass.id, category_id: categoryId, name: categoryName }
+      )
+      // The just-deleted category can't stay selected -- renderRecognitionTab
+      // itself falls back to Overall when selectedCategoryId no longer
+      // matches any fetched category, so passing it through here is safe.
+      renderRecognitionTab(myClass, userId, selectedCategoryId === categoryId ? null : selectedCategoryId)
+    })
+  })
+
+  // --- Give points ---------------------------------------------------
+  const awardForm = detail.querySelector('#recognition-award-form')
+  awardForm?.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const awardMsgEl = detail.querySelector('#recognition-award-message')
+    const showAwardMsg = (text, kind) => {
+      awardMsgEl.textContent = text
+      awardMsgEl.className = kind
+      awardMsgEl.classList.remove('hidden')
+    }
+
+    const studentId = detail.querySelector('#recognition-award-student').value
+    const pointsValue = Number(detail.querySelector('#recognition-award-points').value)
+    const note = detail.querySelector('#recognition-award-note').value.trim()
+
+    if (!studentId) {
+      showAwardMsg(messages.awardStudentRequired, 'error')
+      return
+    }
+    if (!Number.isInteger(pointsValue) || pointsValue < 1) {
+      showAwardMsg(messages.awardPointsInvalid, 'error')
+      return
+    }
+
+    const submitBtn = awardForm.querySelector('button[type="submit"]')
+    submitBtn.disabled = true
+    const { error } = await supabase.from('recognition_points').insert({
+      class_id: myClass.id,
+      category_id: selectedCategoryId,
+      student_id: studentId,
+      points: pointsValue,
+      teacher_id: userId,
+      note: note || null
+    })
+    submitBtn.disabled = false
+    if (error) {
+      showAwardMsg(messages.awardError(error), 'error')
+      return
+    }
+
+    const studentName = nameByStudentId.get(studentId) || 'Unknown'
+    const categoryName = categories.find(c => c.id === selectedCategoryId)?.name || ''
+    window.showToast(messages.awarded(studentName, pointsValue, categoryName))
+    logAudit(
+      userId, 'teacher', 'recognition_points.awarded', 'recognition_points', null,
+      `Gave ${studentName} ${pointsValue} point(s) in "${categoryName}" (${myClass.name})`,
+      { class_id: myClass.id, category_id: selectedCategoryId, student_id: studentId, points: pointsValue, note: note || null }
+    )
+    renderRecognitionTab(myClass, userId, selectedCategoryId)
+  })
+
+  // --- Edit own award (amount + note) ------------------------------------
+  detail.querySelectorAll('.recognition-award-edit-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const row = btn.closest('.recognition-award-row')
+      const awardId = row.dataset.awardId
+      const currentPoints = row.dataset.points
+      const currentNote = row.querySelector('.recognition-award-note')?.textContent || ''
+      row.innerHTML = `
+        <div class="recognition-award-edit-form">
+          <input type="number" class="recognition-award-edit-points" min="1" step="1" value="${escapeHtml(currentPoints)}" />
+          <input type="text" class="recognition-award-edit-note" value="${escapeHtml(currentNote)}" placeholder="${messages.awardNotePlaceholder}" />
+          <button type="button" class="recognition-award-edit-save-btn">${messages.editSaveButton}</button>
+          <button type="button" class="recognition-award-edit-cancel-btn">${messages.editCancelButton}</button>
+        </div>
+        <p class="recognition-award-edit-message hidden"></p>
+      `
+      row.querySelector('.recognition-award-edit-cancel-btn').addEventListener('click', () => {
+        renderRecognitionTab(myClass, userId, selectedCategoryId)
+      })
+      row.querySelector('.recognition-award-edit-save-btn').addEventListener('click', async () => {
+        const editMsgEl = row.querySelector('.recognition-award-edit-message')
+        const newPoints = Number(row.querySelector('.recognition-award-edit-points').value)
+        const newNote = row.querySelector('.recognition-award-edit-note').value.trim()
+        if (!Number.isInteger(newPoints) || newPoints < 1) {
+          editMsgEl.textContent = messages.awardPointsInvalid
+          editMsgEl.className = 'error'
+          editMsgEl.classList.remove('hidden')
+          return
+        }
+        const { error } = await supabase.from('recognition_points').update({ points: newPoints, note: newNote || null }).eq('id', awardId)
+        if (error) {
+          editMsgEl.textContent = messages.editError(error)
+          editMsgEl.className = 'error'
+          editMsgEl.classList.remove('hidden')
+          return
+        }
+        window.showToast(messages.awardEdited)
+        logAudit(
+          userId, 'teacher', 'recognition_points.edited', 'recognition_points', awardId,
+          `Edited a ${myClass.name} recognition points award to ${newPoints} point(s)`,
+          { class_id: myClass.id, award_id: awardId, points: newPoints, note: newNote || null }
+        )
+        renderRecognitionTab(myClass, userId, selectedCategoryId)
+      })
+    })
+  })
+
+  // --- Delete own award ---------------------------------------------
+  detail.querySelectorAll('.recognition-award-delete-btn').forEach(btn => {
+    let armed = false
+    btn.addEventListener('click', async () => {
+      const row = btn.closest('.recognition-award-row')
+      const awardId = row.dataset.awardId
+      if (!armed) {
+        armed = true
+        btn.textContent = messages.awardDeleteConfirmButton
+        btn.classList.add('confirm-armed')
+        return
+      }
+      btn.disabled = true
+      const { error } = await supabase.from('recognition_points').delete().eq('id', awardId)
+      if (error) {
+        window.showToast(messages.awardDeleteError(error))
+        btn.disabled = false
+        armed = false
+        btn.textContent = messages.awardDeleteButton
+        btn.classList.remove('confirm-armed')
+        return
+      }
+      window.showToast(messages.awardDeleted)
+      logAudit(
+        userId, 'teacher', 'recognition_points.deleted', 'recognition_points', awardId,
+        `Deleted a ${myClass.name} recognition points award`,
+        { class_id: myClass.id, award_id: awardId }
+      )
+      renderRecognitionTab(myClass, userId, selectedCategoryId)
+    })
+  })
 }
 
 /**

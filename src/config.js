@@ -386,6 +386,25 @@ export const ADMIN_MESSAGES = {
     noStudentsInClass: 'This class has no students yet.',
     assignmentSaved: 'Saved',
     assignmentError: (err) => `Couldn't save: ${err.message}`
+  },
+  // Read-only mirror of the teacher-facing "Recognition" tab (see
+  // teacher.js's renderRecognitionTab and data_import/86_recognition_
+  // categories_and_points.sql) -- admins can see every class's categories,
+  // leaderboards and full award history, but never create/edit/delete
+  // anything here. Same "read-only mirror" relationship Smile Box has
+  // between the teacher wall and ADMIN_MESSAGES.smileBoxRecords.
+  recognition: {
+    hint: 'Read-only view of every class’s recognition categories and points -- teachers manage these from their own dashboard.',
+    classLabel: 'Class',
+    classPlaceholder: 'Select a class',
+    loadError: (err) => `Couldn't load: ${err.message}`,
+    overallLabel: 'Overall',
+    leaderboardEmpty: 'No points given yet.',
+    pointsStat: (points) => `${points} point${points === 1 ? '' : 's'}`,
+    noCategoriesYet: 'This class has no recognition categories yet.',
+    logHeading: 'Award History',
+    noLogYet: 'No points given yet.',
+    awardedBy: (teacherName) => `by ${teacherName}`
   }
 }
 
@@ -554,6 +573,77 @@ export const TEACHER_MESSAGES = {
     absentHeading: (count) => `Absent (${count})`,
     nobodyPresent: 'No one was present.',
     nobodyAbsent: 'No one was absent.'
+  },
+  // "Insights" tab -- see teacher.js's renderInsightsTab. All-time
+  // leaderboards ranked by raw cumulative count (not percentage), so a
+  // newcomer with e.g. 2/2 present can't outrank someone with a long solid
+  // track record -- the percentage is still shown alongside each row for
+  // context. A student with zero attendance rows at all (never marked
+  // either way) is excluded from both lists and called out separately via
+  // noRecordsNote, since that's a data gap, not an absence record.
+  insights: {
+    loadError: (err) => `Couldn't load insights: ${err.message}`,
+    heading: (className) => `Insights — ${className}`,
+    hint: 'All-time attendance leaders for this class, based on every recorded session.',
+    mostPresentHeading: 'Most Present',
+    mostAbsentHeading: 'Most Absent',
+    presentStat: (present, total, pct) => `${present}/${total} present (${pct}%)`,
+    absentStat: (absent, total, pct) => `${absent}/${total} absent (${pct}%)`,
+    noDataYet: 'Not enough attendance data yet.',
+    noRecordsNote: (count) => `${count} student${count === 1 ? '' : 's'} have no attendance records yet and aren't included above.`
+  },
+  // "Recognition" tab -- see teacher.js's renderRecognitionTab and
+  // data_import/86_recognition_categories_and_points.sql. Teachers define
+  // their own named point categories per class and award points to kids
+  // over time; points build into a per-category leaderboard plus one
+  // "Overall" combined leaderboard. Categories are shared with any
+  // co-teacher of the same class, but only the teacher who created a
+  // category, or who gave a specific points award, can rename/delete it --
+  // hence the separate rename/delete vs. add error messages below.
+  recognition: {
+    loadError: (err) => `Couldn't load Recognition: ${err.message}`,
+    heading: (className) => `Recognition — ${className}`,
+    hint: "Give points in categories you create, and watch the leaderboard build over time. Points can later be used to decide who gets an award.",
+    overallLabel: 'Overall',
+    leaderboardEmpty: 'No points given yet.',
+    pointsStat: (points) => `${points} point${points === 1 ? '' : 's'}`,
+    awardHeading: 'Give Points',
+    awardStudentPlaceholder: 'Choose a student…',
+    awardNotePlaceholder: 'Reason (optional)',
+    awardButton: 'Give Points',
+    awardStudentRequired: 'Choose a student first.',
+    awardPointsInvalid: 'Points must be a whole number of 1 or more.',
+    awardError: (err) => `Couldn't give points: ${err.message}`,
+    awarded: (name, points, categoryName) => `Gave ${name} ${points} point${points === 1 ? '' : 's'} in "${categoryName}"`,
+    recentAwardsHeading: 'Recent Awards',
+    noAwardsYet: 'No points given yet.',
+    editButton: 'Edit',
+    editSaveButton: 'Save',
+    editCancelButton: 'Cancel',
+    editError: (err) => `Couldn't save changes: ${err.message}`,
+    awardEdited: 'Award updated.',
+    awardDeleteButton: 'Delete',
+    awardDeleteConfirmButton: 'Confirm Delete',
+    awardDeleteError: (err) => `Couldn't delete: ${err.message}`,
+    awardDeleted: 'Award deleted.',
+    manageCategoriesHeading: 'Manage Categories',
+    noCategoriesYet: 'No categories yet -- add one below to start giving points.',
+    addCategoryPlaceholder: 'New category name',
+    addCategoryButton: '+ Add Category',
+    addCategoryNameRequired: 'Enter a category name first.',
+    addCategoryDuplicate: 'This class already has a category with that name.',
+    addCategoryError: (err) => `Couldn't add category: ${err.message}`,
+    categoryAdded: (name) => `Added category "${name}"`,
+    renameButton: 'Rename',
+    renameSaveButton: 'Save',
+    renameCancelButton: 'Cancel',
+    renameNameRequired: 'Enter a category name first.',
+    renameError: (err) => `Couldn't rename: ${err.message}`,
+    categoryRenamed: 'Category renamed.',
+    deleteButton: 'Delete',
+    deleteConfirmButton: 'Confirm Delete',
+    deleteError: (err) => `Couldn't delete: ${err.message}`,
+    categoryDeleted: (name) => `Deleted category "${name}"`
   }
 }
 
