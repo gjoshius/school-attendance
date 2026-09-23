@@ -1836,22 +1836,22 @@ h4 {
   white-space: nowrap;
 }
 
-/* --- "Recognition" tab (src/teacher.js's renderRecognitionTab, and its
-   read-only mirror in src/admin.js's renderRecognitionTab) --------------
+/* --- "Kudos" tab (src/teacher.js's renderKudosTab, and its
+   read-only mirror in src/admin.js's renderKudosTab) --------------
    Category pills to switch between the combined "Overall" leaderboard and
    each teacher-defined category; the leaderboard card itself reuses
    .insights-card/.insight-row above. Category management reuses
    .class-group-* (add/rename/delete look identical to Class Groups, just
    under a new class name since only the category's own creator gets the
-   buttons at all -- see renderRecognitionDetail). */
-.recognition-pills {
+   buttons at all -- see renderKudosDetail). */
+.kudos-pills {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   margin: 0.75rem 0;
 }
 
-.recognition-pill {
+.kudos-pill {
   width: auto;
   background: white;
   color: #4f46e5;
@@ -1861,16 +1861,16 @@ h4 {
   border-radius: 999px;
 }
 
-.recognition-pill.active {
+.kudos-pill.active {
   background: #4f46e5;
   color: white;
 }
 
-.recognition-leaderboard-card {
+.kudos-leaderboard-card {
   margin-bottom: 0.75rem;
 }
 
-.recognition-award-panel {
+.kudos-award-panel {
   background: white;
   border-radius: 8px;
   padding: 0.75rem 1rem;
@@ -1878,21 +1878,21 @@ h4 {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.recognition-award-panel h4 {
+.kudos-award-panel h4 {
   margin: 0 0 0.5rem;
   font-size: 0.9rem;
   color: #4f46e5;
 }
 
-#recognition-award-form {
+#kudos-award-form {
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
   align-items: center;
 }
 
-#recognition-award-form select,
-#recognition-award-form input[type="text"] {
+#kudos-award-form select,
+#kudos-award-form input[type="text"] {
   flex: 1;
   min-width: 140px;
   padding: 0.4rem 0.6rem;
@@ -1901,7 +1901,7 @@ h4 {
   font-size: var(--font-label);
 }
 
-#recognition-award-form input[type="number"] {
+#kudos-award-form input[type="number"] {
   width: 70px;
   padding: 0.4rem 0.6rem;
   border: 1px solid #d1d5db;
@@ -1909,7 +1909,7 @@ h4 {
   font-size: var(--font-label);
 }
 
-#recognition-award-form button {
+#kudos-award-form button {
   width: auto;
   background: #4f46e5;
   color: white;
@@ -1918,7 +1918,7 @@ h4 {
   border-radius: 6px;
 }
 
-.recognition-award-row {
+.kudos-award-row {
   background: white;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
@@ -1926,44 +1926,44 @@ h4 {
   margin-bottom: 0.4rem;
 }
 
-.recognition-award-main {
+.kudos-award-main {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.5rem;
 }
 
-.recognition-award-name {
+.kudos-award-name {
   font-weight: 600;
   color: #374151;
 }
 
-.recognition-award-points {
+.kudos-award-points {
   color: #4f46e5;
   font-size: var(--font-small);
 }
 
-.recognition-award-category {
+.kudos-award-category {
   color: #9ca3af;
   font-size: var(--font-small);
 }
 
-.recognition-award-note {
+.kudos-award-note {
   margin-top: 0.2rem;
   font-size: var(--font-small);
   color: #6b7280;
   font-style: italic;
 }
 
-.recognition-award-actions {
+.kudos-award-actions {
   display: flex;
   gap: 0.4rem;
   margin-top: 0.4rem;
 }
 
-.recognition-award-edit-btn,
-.recognition-award-edit-save-btn,
-.recognition-award-edit-cancel-btn {
+.kudos-award-edit-btn,
+.kudos-award-edit-save-btn,
+.kudos-award-edit-cancel-btn {
   width: auto;
   background: white;
   color: #4f46e5;
@@ -1973,7 +1973,7 @@ h4 {
   border-radius: 4px;
 }
 
-.recognition-award-delete-btn {
+.kudos-award-delete-btn {
   width: auto;
   background: white;
   color: #ef4444;
@@ -1983,19 +1983,19 @@ h4 {
   border-radius: 4px;
 }
 
-.recognition-award-delete-btn.confirm-armed {
+.kudos-award-delete-btn.confirm-armed {
   background: #ef4444;
   color: white;
 }
 
-.recognition-award-edit-form {
+.kudos-award-edit-form {
   display: flex;
   flex-wrap: wrap;
   gap: 0.4rem;
   align-items: center;
 }
 
-.recognition-award-edit-form input[type="number"] {
+.kudos-award-edit-form input[type="number"] {
   width: 70px;
   padding: 0.3rem 0.5rem;
   border: 1px solid #d1d5db;
@@ -2003,7 +2003,7 @@ h4 {
   font-size: var(--font-label);
 }
 
-.recognition-award-edit-form input[type="text"] {
+.kudos-award-edit-form input[type="text"] {
   flex: 1;
   min-width: 120px;
   padding: 0.3rem 0.5rem;
@@ -2012,9 +2012,9 @@ h4 {
   font-size: var(--font-label);
 }
 
-.recognition-category-rename-btn,
-.recognition-category-rename-save-btn,
-.recognition-category-rename-cancel-btn {
+.kudos-category-rename-btn,
+.kudos-category-rename-save-btn,
+.kudos-category-rename-cancel-btn {
   width: auto;
   background: white;
   color: #4f46e5;
@@ -2024,7 +2024,7 @@ h4 {
   border-radius: 4px;
 }
 
-.recognition-category-delete-btn {
+.kudos-category-delete-btn {
   width: auto;
   background: white;
   color: #ef4444;
@@ -2034,12 +2034,12 @@ h4 {
   border-radius: 4px;
 }
 
-.recognition-category-delete-btn.confirm-armed {
+.kudos-category-delete-btn.confirm-armed {
   background: #ef4444;
   color: white;
 }
 
-.recognition-manage-categories {
+.kudos-manage-categories {
   background: white;
   border-radius: 8px;
   padding: 0.75rem 1rem;
@@ -2047,14 +2047,14 @@ h4 {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-.recognition-manage-categories summary {
+.kudos-manage-categories summary {
   cursor: pointer;
   font-weight: 600;
   color: #374151;
   list-style: none;
 }
 
-.recognition-manage-categories summary::-webkit-details-marker {
+.kudos-manage-categories summary::-webkit-details-marker {
   display: none;
 }
 

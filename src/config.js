@@ -387,21 +387,22 @@ export const ADMIN_MESSAGES = {
     assignmentSaved: 'Saved',
     assignmentError: (err) => `Couldn't save: ${err.message}`
   },
-  // Read-only mirror of the teacher-facing "Recognition" tab (see
-  // teacher.js's renderRecognitionTab and data_import/86_recognition_
-  // categories_and_points.sql) -- admins can see every class's categories,
+  // Read-only mirror of the teacher-facing "Kudos" tab (see
+  // teacher.js's renderKudosTab and data_import/86_recognition_
+  // categories_and_points.sql, renamed to kudos_* by data_import/88_
+  // rename_recognition_to_kudos.sql) -- admins can see every class's categories,
   // leaderboards and full award history, but never create/edit/delete
   // anything here. Same "read-only mirror" relationship Smile Box has
   // between the teacher wall and ADMIN_MESSAGES.smileBoxRecords.
-  recognition: {
-    hint: 'Read-only view of every class’s recognition categories and points -- teachers manage these from their own dashboard.',
+  kudos: {
+    hint: 'Read-only view of every class’s kudos categories and points -- teachers manage these from their own dashboard.',
     classLabel: 'Class',
     classPlaceholder: 'Select a class',
     loadError: (err) => `Couldn't load: ${err.message}`,
     overallLabel: 'Overall',
     leaderboardEmpty: 'No points given yet.',
     pointsStat: (points) => `${points} point${points === 1 ? '' : 's'}`,
-    noCategoriesYet: 'This class has no recognition categories yet.',
+    noCategoriesYet: 'This class has no kudos categories yet.',
     logHeading: 'Award History',
     noLogYet: 'No points given yet.',
     awardedBy: (teacherName) => `by ${teacherName}`
@@ -590,19 +591,32 @@ export const TEACHER_MESSAGES = {
     presentStat: (present, total, pct) => `${present}/${total} present (${pct}%)`,
     absentStat: (absent, total, pct) => `${absent}/${total} absent (${pct}%)`,
     noDataYet: 'Not enough attendance data yet.',
-    noRecordsNote: (count) => `${count} student${count === 1 ? '' : 's'} have no attendance records yet and aren't included above.`
+    noRecordsNote: (count) => `${count} student${count === 1 ? '' : 's'} have no attendance records yet and aren't included above.`,
+    // One card per teacher-defined kudos category (see the
+    // Kudos tab and data_import/86_recognition_categories_and_
+    // points.sql, renamed to kudos_* by data_import/88_rename_recognition_
+    // to_kudos.sql), showing that category's own top-5 active students --
+    // same at-a-glance leaderboard treatment as Most Present/Most Absent
+    // above, just for points instead of attendance. Point amounts are
+    // formatted via TEACHER_MESSAGES.kudos.pointsStat rather than a
+    // duplicate here, since that's the exact same "N point(s)" wording the
+    // Kudos tab itself already uses. Omitted entirely for a class
+    // with no categories yet -- nothing to show, same as Class Groups.
+    kudosHeading: 'By Category',
+    kudosEmpty: 'No points given yet.'
   },
-  // "Recognition" tab -- see teacher.js's renderRecognitionTab and
-  // data_import/86_recognition_categories_and_points.sql. Teachers define
-  // their own named point categories per class and award points to kids
+  // "Kudos" tab -- see teacher.js's renderKudosTab and
+  // data_import/86_recognition_categories_and_points.sql (renamed to
+  // kudos_* by data_import/88_rename_recognition_to_kudos.sql). Teachers
+  // define their own named point categories per class and award points to kids
   // over time; points build into a per-category leaderboard plus one
   // "Overall" combined leaderboard. Categories are shared with any
   // co-teacher of the same class, but only the teacher who created a
   // category, or who gave a specific points award, can rename/delete it --
   // hence the separate rename/delete vs. add error messages below.
-  recognition: {
-    loadError: (err) => `Couldn't load Recognition: ${err.message}`,
-    heading: (className) => `Recognition — ${className}`,
+  kudos: {
+    loadError: (err) => `Couldn't load Kudos: ${err.message}`,
+    heading: (className) => `Kudos — ${className}`,
     hint: "Give points in categories you create, and watch the leaderboard build over time. Points can later be used to decide who gets an award.",
     overallLabel: 'Overall',
     leaderboardEmpty: 'No points given yet.',
@@ -612,7 +626,7 @@ export const TEACHER_MESSAGES = {
     awardNotePlaceholder: 'Reason (optional)',
     awardButton: 'Give Points',
     awardStudentRequired: 'Choose a student first.',
-    awardPointsInvalid: 'Points must be a whole number of 1 or more.',
+    awardPointsInvalid: 'Points must be a whole number from 1 to 10.',
     awardError: (err) => `Couldn't give points: ${err.message}`,
     awarded: (name, points, categoryName) => `Gave ${name} ${points} point${points === 1 ? '' : 's'} in "${categoryName}"`,
     recentAwardsHeading: 'Recent Awards',
