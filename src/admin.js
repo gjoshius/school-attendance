@@ -290,10 +290,30 @@ async function renderTodayTab(userId) {
     card.querySelector('.status-badge').textContent = label
   }
 
-  // Clean up any previous subscription
+  // Clean up any previous subscription -- always, even on a closed day,
+  // in case one was left open from an earlier open day this same session
+  // (e.g. the calendar changed today's status, or this is a stale channel
+  // from before a page-visibility resume).
   if (window._attendanceChannel) {
     supabase.removeChannel(window._attendanceChannel)
+    window._attendanceChannel = null
   }
+  if (window._teacherPresenceViewerChannel) {
+    supabase.removeChannel(window._teacherPresenceViewerChannel)
+    window._teacherPresenceViewerChannel = null
+  }
+
+  // Only subscribe to Realtime at all when today is actually an
+  // attendance-open day (see data_import/15_class_sessions.sql) -- in
+  // practice, only Saturdays with a class scheduled. On any other day,
+  // no teacher's attendance form is ever open (teacher.js's own
+  // is_attendance_day check keeps trackTeacherPresence from firing then
+  // too), so there's nothing for either channel to ever report -- just
+  // constant background Realtime overhead for a board that can't change.
+  // The Today tab is every admin's default landing tab, so without this
+  // gate these channels were open effectively 24/7, every day of the
+  // week, not just the one day they could ever do anything.
+  if (!todaySession?.is_attendance_day) return
 
   // Subscribe to attendance inserts (first submission of the day) and
   // updates (a reject flips a card to Needs Rework; a teacher's resubmit --
@@ -327,11 +347,6 @@ async function renderTodayTab(userId) {
       }
     )
     .subscribe()
-
-  // Clean up any previous presence-viewer subscription
-  if (window._teacherPresenceViewerChannel) {
-    supabase.removeChannel(window._teacherPresenceViewerChannel)
-  }
 
   // Live "a teacher currently has this open" dot -- separate channel from
   // the attendance-submission one above, joined to the SAME channel name a
