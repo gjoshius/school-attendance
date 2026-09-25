@@ -3454,14 +3454,20 @@ async function renderVolunteerTeamContent(classId, userId) {
  *   need this, since it's already scoped to that team).
  */
 function buildVolunteerEntryRow(e, { showTeam = false } = {}) {
-  const noteAttr = e.note ? e.note.replace(/"/g, '&quot;') : ''
+  // escapeHtml, not just a quote-only replace -- this note is free text a
+  // teacher submitted (Log Hours tab), and was previously rendered
+  // straight into innerHTML below with no escaping at all, a stored-XSS
+  // gap every other free-text field in this app (lesson notes, Smile Box,
+  // Kudos award notes) already closed via escapeHtml. Escaping it once
+  // here covers both the attribute and the visible span below.
+  const noteAttr = e.note ? escapeHtml(e.note) : ''
   const teamName = e.classes?.name || ''
   return `
     <div class="volunteer-entry-row" data-entry-id="${e.id}" data-student-id="${e.student_id}" data-class-id="${e.class_id}" data-team-name="${teamName}" data-date="${e.date}" data-hours="${e.hours}" data-note="${noteAttr}" data-approved="${e.approved}">
       <div class="volunteer-entry-main">
         <strong>${toTitleCase(e.students?.full_name)}</strong>
         <span>${showTeam && teamName ? `${teamName} · ` : ''}${e.date} · ${ADMIN_MESSAGES.volunteerHours.totalStat(Number(e.hours))}</span>
-        ${e.note ? `<span class="volunteer-entry-note">${e.note}</span>` : ''}
+        ${e.note ? `<span class="volunteer-entry-note">${noteAttr}</span>` : ''}
       </div>
       <div class="volunteer-entry-actions">
         ${!e.approved ? `<button class="accept-volunteer-entry-btn">${ADMIN_MESSAGES.volunteerHours.acceptLabel}</button>` : ''}
@@ -3610,12 +3616,19 @@ async function handleVolunteerEntryClick(e, userId) {
  */
 function buildVolunteerEntryEditRow(row) {
   const studentName = row.querySelector('strong')?.textContent || ''
+  // row.dataset.note comes back from the DOM already HTML-decoded (that's
+  // how data-* attributes work), i.e. it's the teacher's raw note text
+  // again at this point -- re-escape before putting it back into a new
+  // innerHTML string, or a `"` in the note breaks out of this attribute
+  // the same way buildVolunteerEntryRow's note rendering did before that
+  // was fixed.
+  const noteValue = row.dataset.note ? escapeHtml(row.dataset.note) : ''
   return `
     <div class="volunteer-entry-main">
       <strong>${studentName}</strong>
       <input type="date" class="volunteer-edit-date" value="${row.dataset.date}" />
       <input type="number" class="volunteer-edit-hours" value="${row.dataset.hours}" step="0.25" min="0.25" />
-      <input type="text" class="volunteer-edit-note" value="${row.dataset.note || ''}" placeholder="${ADMIN_MESSAGES.volunteerHours.notePlaceholder}" />
+      <input type="text" class="volunteer-edit-note" value="${noteValue}" placeholder="${ADMIN_MESSAGES.volunteerHours.notePlaceholder}" />
     </div>
     <div class="volunteer-entry-actions">
       <button class="save-volunteer-edit-btn">${ADMIN_MESSAGES.volunteerHours.saveLabel}</button>
@@ -3717,7 +3730,7 @@ async function loadActivityRange(startDate, endDate, roleFilter) {
       ${rows.map(r => `
         <div class="audit-log-row">
           <div class="audit-log-main">
-            <span class="audit-log-summary">${r.summary}</span>
+            <span class="audit-log-summary">${escapeHtml(r.summary)}</span>
             <span class="audit-log-meta">${toTitleCase(r.profiles?.full_name) || 'Unknown'} · <span class="audit-log-role-badge audit-log-role-${r.actor_role}">${r.actor_role}</span></span>
           </div>
           <span class="audit-log-time">${formatActivityTimestamp(r.created_at)}</span>
