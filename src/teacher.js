@@ -2747,7 +2747,7 @@ async function renderSmileBoxTab(userId) {
   // submit handler).
   const searchRoster = [
     ...(students || []).map(s => ({ id: s.id, name: toTitleCase(s.full_name), type: 'student' })),
-    ...(people || []).map(p => ({ id: p.id, name: p.full_name, type: 'teacher' }))
+    ...(people || []).map(p => ({ id: p.id, name: toTitleCase(p.full_name), type: 'teacher' }))
   ]
 
   // Author display names for the wall, fetched as a separate query rather
@@ -2759,7 +2759,7 @@ async function renderSmileBoxTab(userId) {
   const { data: authors } = authorIds.length > 0
     ? await supabase.from('profiles').select('id, full_name').in('id', authorIds)
     : { data: [] }
-  const authorNameById = new Map((authors || []).map(a => [a.id, a.full_name]))
+  const authorNameById = new Map((authors || []).map(a => [a.id, toTitleCase(a.full_name)]))
 
   tabContent.innerHTML = `
     <p class="smile-box-intro">${SMILE_BOX_MESSAGES.intro}</p>

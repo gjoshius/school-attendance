@@ -205,7 +205,7 @@ async function renderTodayTab(userId) {
     const label = needsRework ? ADMIN_MESSAGES.today.reworkBadge : submitted ? 'Submitted' : 'Waiting'
     // A class can have more than one teacher -- list all of them
     const teacherNames = (c.class_teachers || [])
-      .map(ct => ct.profiles?.full_name)
+      .map(ct => toTitleCase(ct.profiles?.full_name))
       .filter(Boolean)
       .join(', ') || ADMIN_MESSAGES.classes.unassignedBadge
     return `
@@ -1316,7 +1316,7 @@ async function loadKudosAdminDetail(classId, className, selectedCategoryId = nul
   }
 
   const nameByStudentId = new Map(students.map(s => [s.id, toTitleCase(s.full_name)]))
-  const teacherNameById = new Map(teachers.map(t => [t.id, t.full_name]))
+  const teacherNameById = new Map(teachers.map(t => [t.id, toTitleCase(t.full_name)]))
 
   const validSelection = selectedCategoryId && categories.some(c => c.id === selectedCategoryId) ? selectedCategoryId : null
   const pointsInScope = validSelection ? points.filter(p => p.category_id === validSelection) : points
@@ -1858,7 +1858,7 @@ async function renderClassesTab(userId) {
   // form writes directly to classes.teacher_id, which can only ever be an
   // active account, so it deliberately doesn't offer pending teachers.
   const teacherOptions = (activeTeachers || [])
-    .map(t => `<option value="${t.id}">${t.full_name}</option>`)
+    .map(t => `<option value="${t.id}">${toTitleCase(t.full_name)}</option>`)
     .join('')
 
   // One combined roster for the drag-and-drop pool and "+ Add teacher"
@@ -1884,7 +1884,7 @@ async function renderClassesTab(userId) {
   })
 
   const teacherRoster = [
-    ...(activeTeachers || []).map(t => ({ ref: `active:${t.id}`, name: t.full_name, pending: false })),
+    ...(activeTeachers || []).map(t => ({ ref: `active:${t.id}`, name: toTitleCase(t.full_name), pending: false })),
     ...(registrations || [])
       .filter(r => !activeEmails.has((r.email || '').toLowerCase()))
       .flatMap(r => {
@@ -1902,7 +1902,7 @@ async function renderClassesTab(userId) {
         const roles = decidedRole ? [decidedRole] : ['teacher', 'assistant']
         return roles.map(role => ({
           ref: `pending:${role}:${r.email}`,
-          name: r.full_name,
+          name: toTitleCase(r.full_name),
           pending: true,
           role
         }))
@@ -1981,7 +1981,7 @@ async function renderClassesTab(userId) {
 
     const activeTags = (c.class_teachers || [])
       .map(ct => {
-        const name = ct.profiles?.full_name
+        const name = toTitleCase(ct.profiles?.full_name)
         if (!name) return ''
         return `<span class="teacher-tag">${name}<button type="button" class="remove-teacher-btn" data-class-id="${c.id}" data-class-name="${c.name}" data-teacher-ref="active:${ct.teacher_id}" data-teacher-name="${name}" title="Remove ${name}">×</button></span>`
       })
@@ -1989,7 +1989,7 @@ async function renderClassesTab(userId) {
 
     const pendingTags = classPending
       .map(p => {
-        const name = p.teacher_registrations?.full_name || p.email
+        const name = toTitleCase(p.teacher_registrations?.full_name) || p.email
         const roleLabel = p.role === 'assistant' ? ' (assistant, pending)' : ' (pending)'
         return `<span class="teacher-tag teacher-tag-pending">${name}${roleLabel}<button type="button" class="remove-teacher-btn" data-class-id="${c.id}" data-class-name="${c.name}" data-teacher-ref="pending:${p.role}:${p.email}" data-teacher-name="${name}" title="Remove ${name}">×</button></span>`
       })
