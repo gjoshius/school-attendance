@@ -1367,6 +1367,87 @@ function renderAttendanceForm(myClass, today, userId, existing) {
             : TEACHER_MESSAGES.attendanceForm.attendanceSubmitted
       )
 
+      // Cascade any co-teacher just marked Absent here to their OTHER
+      // classes for today too -- same logic (and same one-directional
+      // rule: absent cascades, a present submission never overwrites an
+      // absent already recorded elsewhere) as admin.js's wireReviewPanel
+      // and wireBackfillModalSave, just triggered from the teacher's own
+      // submission instead of an admin's Save. This is the path that
+      // actually matters day to day: an admin doesn't routinely open the
+      // Today tab and save every class, only when they're already fixing
+      // a discrepancy -- so waiting for that meant two co-teachers could
+      // submit contradictory statuses for the same person and nothing
+      // would reconcile them unless an admin happened to notice. Hooking
+      // this into submission itself means whichever class's teacher marks
+      // someone absent FIRST is the one whose write wins, immediately,
+      // with no admin action required at all. The teacher's own row is
+      // never a candidate -- it's always written as 'present' above,
+      // since submitting attendance at all means they're here.
+      // Wrapped in try/catch, same reasoning as admin.js's two cascade
+      // blocks -- a dropped connection throws rather than resolving with
+      // an error object, and that throw would otherwise skip the
+      // re-fetch + renderAlreadySubmittedMessage below even though the
+      // actual attendance submission already succeeded, leaving the
+      // screen stuck looking editable with the submit button disabled.
+      //
+      // NOTE, pending live confirmation: this cascade's class_teachers
+      // lookup uses t.teacherId (the CO-TEACHER's id), not the signed-in
+      // teacher's own auth.uid() -- and data_import/47's own dump shows
+      // that table's only SELECT policy scoped to `teacher_id = auth.uid()`.
+      // If that's still the only read policy live, this lookup returns
+      // zero rows for anyone but the signed-in teacher themselves, so
+      // `otherLinks` is always empty and this silently never cascades for
+      // a real teacher account -- soft-failing via the `continue` below
+      // rather than erroring, so nothing breaks, it just quietly does
+      // nothing. Flagged to Gaurav to confirm live and possibly move this
+      // cascade server-side (a trigger on teacher_attendance) instead.
+      const absentCoTeachers = [...tabContent.querySelectorAll('.co-teacher-row')]
+        .map(row => ({
+          teacherId: row.dataset.teacherId,
+          name: toTitleCase(row.querySelector('span')?.textContent),
+          status: row.querySelector('.toggle-btn.active')?.dataset.status || 'present'
+        }))
+        .filter(t => t.status === 'absent' && t.teacherId)
+
+      try {
+        const cascadeSummaries = []
+        for (const t of absentCoTeachers) {
+          const { data: otherLinks, error: linksError } = await supabase
+            .from('class_teachers')
+            .select('class_id, classes(name)')
+            .eq('teacher_id', t.teacherId)
+            .neq('class_id', myClass.id)
+          if (linksError || !otherLinks || otherLinks.length === 0) continue
+
+          const { error: cascadeError } = await supabase
+            .from('teacher_attendance')
+            .upsert(
+              otherLinks.map(link => ({
+                class_id: link.class_id, teacher_id: t.teacherId, date: today,
+                status: 'absent', marked_by: userId
+              })),
+              { onConflict: 'class_id,teacher_id,date' }
+            )
+          if (cascadeError) {
+            console.error('Error cascading absence to other classes:', cascadeError)
+            continue
+          }
+          const otherClassNames = otherLinks.map(link => link.classes?.name).filter(Boolean)
+          cascadeSummaries.push({ name: t.name, classNames: otherClassNames })
+        }
+        if (cascadeSummaries.length > 0) {
+          const detail = cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')
+          showToast(TEACHER_MESSAGES.attendanceForm.absenceCascaded(cascadeSummaries))
+          logAudit(
+            userId, 'teacher', 'teacher_attendance.absence_cascaded', 'teacher_attendance', myClass.id,
+            `Marked absent everywhere today, from ${myClass.name}: ${detail}`,
+            { class_id: myClass.id, date: today, cascaded: cascadeSummaries }
+          )
+        }
+      } catch (err) {
+        console.error('Error cascading absence to other classes:', err)
+      }
+
       // Re-fetched rather than built from the DOM or reused from this
       // render's own studentRecords/teacherRecords: both of those are
       // missing something the *next* edit needs -- the DOM never had each

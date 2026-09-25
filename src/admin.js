@@ -467,7 +467,7 @@ async function openClassReviewModal(classId, className, today, userId) {
     // admin can verify what was taught, right here, without a separate tab.
     const [studentRes, teacherRes, noteRes] = await Promise.all([
       supabase.from('attendance').select('id, status, needs_rework, students(full_name)').eq('class_id', classId).eq('date', today),
-      supabase.from('teacher_attendance').select('id, status, needs_rework, profiles!teacher_attendance_teacher_id_fkey(full_name)').eq('class_id', classId).eq('date', today),
+      supabase.from('teacher_attendance').select('id, teacher_id, status, needs_rework, profiles!teacher_attendance_teacher_id_fkey(full_name)').eq('class_id', classId).eq('date', today),
       supabase.from('class_lesson_notes').select('note').eq('class_id', classId).eq('date', today).maybeSingle()
     ])
     if (studentRes.error || teacherRes.error) throw (studentRes.error || teacherRes.error)
@@ -493,8 +493,8 @@ async function openClassReviewModal(classId, className, today, userId) {
   // whole class+day at once -- checking the first is enough.
   const alreadyFlagged = (studentRecords || []).some(r => r.needs_rework) || (teacherRecords || []).some(r => r.needs_rework)
 
-  const buildReviewRow = (rowClass, id, name, status) => `
-    <div class="${rowClass}${alreadyFlagged ? ' read-only' : ''}" data-record-id="${id}">
+  const buildReviewRow = (rowClass, id, name, status, extraAttrs = '') => `
+    <div class="${rowClass}${alreadyFlagged ? ' read-only' : ''}" data-record-id="${id}"${extraAttrs}>
       <span>${name}</span>
       <div class="status-toggle">
         <button class="toggle-btn present-btn${status === 'present' ? ' active' : ''}" data-status="present"${alreadyFlagged ? ' disabled' : ''}>Present</button>
@@ -508,9 +508,13 @@ async function openClassReviewModal(classId, className, today, userId) {
     .map(r => buildReviewRow('review-student-row', r.id, toTitleCase(r.students?.full_name), r.status))
     .join('')
 
+  // Each teacher row carries data-teacher-id (not just its own
+  // teacher_attendance record id) so wireReviewPanel's Save can look up
+  // this same person's OTHER classes -- see that function's own doc
+  // comment on why marking someone absent here also cascades there.
   const teacherRows = [...(teacherRecords || [])]
     .sort((a, b) => (a.profiles?.full_name || '').localeCompare(b.profiles?.full_name || ''))
-    .map(r => buildReviewRow('review-teacher-row', r.id, toTitleCase(r.profiles?.full_name), r.status))
+    .map(r => buildReviewRow('review-teacher-row', r.id, toTitleCase(r.profiles?.full_name), r.status, ` data-teacher-id="${r.teacher_id}"`))
     .join('')
 
   const reworkNoticeHtml = alreadyFlagged ? `<p class="review-rework-notice">${ADMIN_MESSAGES.today.reworkPendingNotice}</p>` : ''
@@ -616,6 +620,22 @@ function wireReviewPanel(panel, classId, className, today, readOnly, userId) {
 
   // Save: update each row in place -- doesn't touch alreadySubmitted on
   // the teacher's side, since the records still exist either way.
+  //
+  // Marking a teacher Absent here also cascades: a teacher's actual
+  // presence at HTYG is one real-world fact, not something that can
+  // genuinely differ class by class, but teacher_attendance is recorded
+  // per (class_id, teacher_id, date) -- so without this, a co-teacher
+  // marking someone absent in THIS class has no effect on their record in
+  // any OTHER class they're also assigned to that same day, which either
+  // silently stays at whatever default that class's own submission left
+  // it at (Present, unless that teacher happened to mark themselves
+  // Unavailable), or never gets a row at all if that class's attendance
+  // was never submitted. cascadeAbsence below closes that gap by writing
+  // Absent into every one of that teacher's OTHER classes for today too,
+  // the moment this save marks them Absent in this one. Deliberately
+  // one-directional -- saving someone as Present here never overwrites an
+  // Absent already recorded elsewhere, since that could otherwise erase a
+  // real, separately-confirmed absence without anyone deciding to.
   panel.querySelector('.save-review-btn').addEventListener('click', async () => {
     const studentStatuses = [...panel.querySelectorAll('.review-student-row')].map(row => ({
       recordId: row.dataset.recordId,
@@ -623,6 +643,8 @@ function wireReviewPanel(panel, classId, className, today, readOnly, userId) {
     }))
     const teacherStatuses = [...panel.querySelectorAll('.review-teacher-row')].map(row => ({
       recordId: row.dataset.recordId,
+      teacherId: row.dataset.teacherId,
+      name: toTitleCase(row.querySelector('span')?.textContent),
       status: row.querySelector('.toggle-btn.active')?.dataset.status || 'present'
     }))
     const updates = [
@@ -632,31 +654,82 @@ function wireReviewPanel(panel, classId, className, today, readOnly, userId) {
     const results = await Promise.all(updates)
     if (results.some(r => r.error)) {
       showReviewMessage(ADMIN_MESSAGES.today.reviewSaveError, 'error')
-    } else {
-      showReviewMessage(ADMIN_MESSAGES.today.reviewSaved, 'success')
-      // Audited after the write succeeds, not before -- see audit.js.
-      // One row for the whole save (not one per student/teacher row) since
-      // this is a single decision the admin made, even though it touches
-      // several rows at once.
-      const presentCount = [...studentStatuses, ...teacherStatuses].filter(s => s.status === 'present').length
-      const absentCount = [...studentStatuses, ...teacherStatuses].filter(s => s.status === 'absent').length
-      logAudit(
-        userId, 'admin', 'attendance.reviewed_saved', 'attendance', classId,
-        `Saved ${className} attendance for ${today} (${presentCount} present, ${absentCount} absent)`,
-        { class_id: classId, date: today, student_count: studentStatuses.length, teacher_count: teacherStatuses.length }
-      )
-      // Once saved, this review is done -- disable both actions so a
-      // stray extra click can't re-save what's already saved, or reject a
-      // submission the admin just finished accepting in the same breath.
-      // Toggles disable too, since they'd otherwise still look editable
-      // with no way left on screen to persist a further change -- closing
-      // and reopening the modal (which fetches fresh data) is how to make
-      // another pass after this.
-      panel.querySelector('.save-review-btn').disabled = true
-      panel.querySelector('.reject-review-btn').disabled = true
-      panel.querySelectorAll('.toggle-btn').forEach(btn => { btn.disabled = true })
-      panel.querySelectorAll('.review-student-row, .review-teacher-row').forEach(row => row.classList.add('read-only'))
+      return
     }
+
+    showReviewMessage(ADMIN_MESSAGES.today.reviewSaved, 'success')
+    // Audited after the write succeeds, not before -- see audit.js.
+    // One row for the whole save (not one per student/teacher row) since
+    // this is a single decision the admin made, even though it touches
+    // several rows at once.
+    const presentCount = [...studentStatuses, ...teacherStatuses].filter(s => s.status === 'present').length
+    const absentCount = [...studentStatuses, ...teacherStatuses].filter(s => s.status === 'absent').length
+    logAudit(
+      userId, 'admin', 'attendance.reviewed_saved', 'attendance', classId,
+      `Saved ${className} attendance for ${today} (${presentCount} present, ${absentCount} absent)`,
+      { class_id: classId, date: today, student_count: studentStatuses.length, teacher_count: teacherStatuses.length }
+    )
+
+    // Cascade: for every teacher just saved as Absent here, mirror that
+    // into their teacher_attendance row (creating it if it doesn't exist
+    // yet) for every OTHER class they're linked to, for this same date.
+    // Wrapped in try/catch (unlike a plain per-call .error check) because
+    // a dropped connection throws outright instead of resolving with an
+    // error object (same caveat as openClassReviewModal's own fetch,
+    // above) -- without this, that throw would skip the read-only lockdown
+    // right below and leave the modal looking editable even though the
+    // actual save already succeeded.
+    try {
+      const absentTeachers = teacherStatuses.filter(t => t.status === 'absent' && t.teacherId)
+      const cascadeSummaries = []
+      for (const t of absentTeachers) {
+        const { data: otherLinks, error: linksError } = await supabase
+          .from('class_teachers')
+          .select('class_id, classes(name)')
+          .eq('teacher_id', t.teacherId)
+          .neq('class_id', classId)
+        if (linksError || !otherLinks || otherLinks.length === 0) continue
+
+        const { error: cascadeError } = await supabase
+          .from('teacher_attendance')
+          .upsert(
+            otherLinks.map(link => ({
+              class_id: link.class_id, teacher_id: t.teacherId, date: today,
+              status: 'absent', marked_by: userId
+            })),
+            { onConflict: 'class_id,teacher_id,date' }
+          )
+        if (cascadeError) {
+          console.error('Error cascading absence to other classes:', cascadeError)
+          continue
+        }
+        const otherClassNames = otherLinks.map(link => link.classes?.name).filter(Boolean)
+        cascadeSummaries.push({ name: t.name, classNames: otherClassNames })
+      }
+      if (cascadeSummaries.length > 0) {
+        const detail = cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')
+        showToast(ADMIN_MESSAGES.today.absenceCascaded(cascadeSummaries))
+        logAudit(
+          userId, 'admin', 'teacher_attendance.absence_cascaded', 'teacher_attendance', classId,
+          `Marked absent everywhere today, from ${className}: ${detail}`,
+          { class_id: classId, date: today, cascaded: cascadeSummaries }
+        )
+      }
+    } catch (err) {
+      console.error('Error cascading absence to other classes:', err)
+    }
+
+    // Once saved, this review is done -- disable both actions so a
+    // stray extra click can't re-save what's already saved, or reject a
+    // submission the admin just finished accepting in the same breath.
+    // Toggles disable too, since they'd otherwise still look editable
+    // with no way left on screen to persist a further change -- closing
+    // and reopening the modal (which fetches fresh data) is how to make
+    // another pass after this.
+    panel.querySelector('.save-review-btn').disabled = true
+    panel.querySelector('.reject-review-btn').disabled = true
+    panel.querySelectorAll('.toggle-btn').forEach(btn => { btn.disabled = true })
+    panel.querySelectorAll('.review-student-row, .review-teacher-row').forEach(row => row.classList.add('read-only'))
   })
 
   // Reject for rework: flags today's records for this class as
@@ -848,7 +921,10 @@ function escKeyClosesBackfillModal(e) {
  * single "Save Attendance" action -- insert-or-update per row (see
  * openBackfillModal's doc comment for why), then refreshes the Records
  * tab's currently-loaded range behind it so the newly entered day shows
- * up immediately if it falls within it.
+ * up immediately if it falls within it. Also cascades any teacher
+ * backfilled as Absent here to their other classes on this same date,
+ * same as the Today tab's wireReviewPanel -- see the cascade block below
+ * for the full reasoning.
  *
  * @param {HTMLElement} panel - The #backfill-modal element.
  * @param {string} classId
@@ -908,6 +984,65 @@ function wireBackfillModalSave(panel, classId, className, date, userId) {
       `Backfilled ${className} attendance for ${date} (${presentCount} present, ${absentCount} absent)`,
       { class_id: classId, date }
     )
+
+    // Same cascade as the Today tab's review modal (see wireReviewPanel's
+    // own doc comment for the full reasoning) -- a teacher backfilled as
+    // Absent here for one class was just as physically absent from their
+    // other classes that same day, so this writes Absent into
+    // teacher_attendance for each of those too, rather than leaving this
+    // one class as the only record of it. Same one-directional rule:
+    // backfilling someone as Present never overwrites an Absent already
+    // recorded elsewhere for that date. Wrapped in try/catch, same reason
+    // as wireReviewPanel's -- a dropped connection throws rather than
+    // resolving with an error object, and that throw would otherwise skip
+    // the Records-tab refresh and modal auto-close below even though the
+    // actual backfill save already succeeded.
+    try {
+      const absentTeachers = [...panel.querySelectorAll('.review-teacher-row')]
+        .map(row => ({
+          teacherId: row.dataset.entityId,
+          name: toTitleCase(row.querySelector('span')?.textContent),
+          status: row.querySelector('.toggle-btn.active')?.dataset.status || 'present'
+        }))
+        .filter(t => t.status === 'absent' && t.teacherId)
+
+      const cascadeSummaries = []
+      for (const t of absentTeachers) {
+        const { data: otherLinks, error: linksError } = await supabase
+          .from('class_teachers')
+          .select('class_id, classes(name)')
+          .eq('teacher_id', t.teacherId)
+          .neq('class_id', classId)
+        if (linksError || !otherLinks || otherLinks.length === 0) continue
+
+        const { error: cascadeError } = await supabase
+          .from('teacher_attendance')
+          .upsert(
+            otherLinks.map(link => ({
+              class_id: link.class_id, teacher_id: t.teacherId, date,
+              status: 'absent', marked_by: userId
+            })),
+            { onConflict: 'class_id,teacher_id,date' }
+          )
+        if (cascadeError) {
+          console.error('Error cascading backfilled absence to other classes:', cascadeError)
+          continue
+        }
+        const otherClassNames = otherLinks.map(link => link.classes?.name).filter(Boolean)
+        cascadeSummaries.push({ name: t.name, classNames: otherClassNames })
+      }
+      if (cascadeSummaries.length > 0) {
+        const detail = cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')
+        showToast(ADMIN_MESSAGES.records.backfill.absenceCascaded(cascadeSummaries, date))
+        logAudit(
+          userId, 'admin', 'teacher_attendance.absence_cascaded', 'teacher_attendance', classId,
+          `Backfilled absent everywhere for ${date}, from ${className}: ${detail}`,
+          { class_id: classId, date, cascaded: cascadeSummaries }
+        )
+      }
+    } catch (err) {
+      console.error('Error cascading backfilled absence to other classes:', err)
+    }
 
     // Re-fetch this same date's range if it's currently loaded on the
     // Records tab behind the modal, so the entry just saved shows up

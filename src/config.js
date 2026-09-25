@@ -139,6 +139,13 @@ export const ADMIN_MESSAGES = {
     saveChangesLabel: 'Save Changes',
     reviewSaved: 'Changes saved',
     reviewSaveError: 'Couldn\'t save changes',
+    // Shown after Save when marking a teacher Absent here also wrote
+    // Absent into their teacher_attendance record for their other
+    // classes today -- see admin.js's wireReviewPanel save handler.
+    // One toast covers every teacher cascaded in this save, each with
+    // the other class name(s) they were also marked absent in.
+    absenceCascaded: (cascadeSummaries) =>
+      `Also marked absent today: ${cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')}`,
     rejectLabel: 'Reject for Rework',
     // Second-click confirmation text -- no native confirm() dialog, same
     // as the rest of this app; the button itself swaps to this label as
@@ -232,7 +239,14 @@ export const ADMIN_MESSAGES = {
       noRosterForClass: 'This class has no students or teachers assigned yet.',
       saveButtonLabel: 'Save Attendance',
       saved: 'Attendance saved',
-      saveError: "Couldn't save attendance"
+      saveError: "Couldn't save attendance",
+      // Same cascade as today.absenceCascaded (see admin.js's
+      // wireBackfillModalSave), but for a backfilled PAST date rather than
+      // today -- worded with that date spelled out instead of "today",
+      // since an admin backfilling last Saturday shouldn't read this as
+      // having just happened right now.
+      absenceCascaded: (cascadeSummaries, date) =>
+        `Also marked absent for ${date}: ${cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')}`
     }
   },
   teacherAttendance: {
@@ -488,6 +502,14 @@ export const TEACHER_MESSAGES = {
     coTeacherHeading: 'Co-Teacher Attendance',
     submitError: (message) => `Error: ${message}`,
     attendanceSubmitted: 'Attendance submitted!',
+    // Shown alongside attendanceSubmitted/attendanceUpdated when marking a
+    // co-teacher Absent here also wrote Absent into their teacher_attendance
+    // record for their OTHER classes today -- see teacher.js's submit
+    // handler. Same wording as admin.js's ADMIN_MESSAGES.today.absenceCascaded,
+    // just triggered by a teacher's own submission instead of an admin's
+    // review-panel Save.
+    absenceCascaded: (cascadeSummaries) =>
+      `Also marked absent today: ${cascadeSummaries.map(c => `${c.name} (${c.classNames.join(', ')})`).join('; ')}`,
     // Shown above the form when an admin has rejected today's submission
     // for rework (see data_import/22_attendance_rework_flag.sql) -- the
     // form below is pre-filled with what was already submitted, not blank,
